@@ -1,0 +1,57 @@
+{
+  "_meta": {
+    "game": "valorant",
+    "poster_type": "game_results",
+    "mode": "fresh",
+    "output_format": "portrait_1080x1920"
+  },
+  "tournament": {
+    "name": "",
+    "logo_path": null,
+    "phase": null,
+    "circuit": null
+  },
+  "match": {
+    "team1": {
+      "name": "",
+      "short_name": "",
+      "logo_path": "",
+      "score": null
+    },
+    "team2": {
+      "name": "",
+      "short_name": "",
+      "logo_path": "",
+      "score": null
+    },
+    "format": null,
+    "date": "",
+    "maps": [
+      { "map_name": "", "rounds_team1": null, "rounds_team2": null },
+      { "map_name": "", "rounds_team1": null, "rounds_team2": null },
+      { "map_name": "", "rounds_team1": null, "rounds_team2": null }
+    ]
+  },
+  "player_feature": {
+    "enabled": false,
+    "image_path": null
+  },
+  "mvp": {
+    "enabled": false,
+    "player_name": null,
+    "agent_name": null,
+    "agent_render_path": null,
+    "stat_label": null,
+    "stat_value": null,
+    "image_path": null
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#7B2FFF",
+    "energy": "intense"
+  }
+}

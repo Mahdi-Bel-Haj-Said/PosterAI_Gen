@@ -1,0 +1,46 @@
+{
+  "_meta": {
+    "game": "league_of_legends",
+    "poster_type": "gameday",
+    "mode": "fresh",
+    "output_format": "portrait_1080x1920"
+  },
+  "tournament": {
+    "name": "EWC 2025",
+    "logo_path": null,
+    "phase": null
+  },
+  "match": {
+    "team1": {
+      "name": "FNATIC",
+      "short_name": "FNC",
+      "logo_path": "assets/logos/FNC_logo.png"
+    },
+    "team2": {
+      "name": "T1",
+      "short_name": "T1",
+      "logo_path": "assets/logos/T1_logo.png"
+    },
+    "format": null,
+    "date": "",
+    "time": "17:00",
+    "timezone": "CET"
+  },
+  "stream": {
+    "platform": "Twitch",
+    "url": "twitch.tv/caedrel"
+  },
+  "player_feature": {
+    "enabled": false,
+    "image_path": null
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#7B2FFF",
+    "energy": "intense"
+  }
+}

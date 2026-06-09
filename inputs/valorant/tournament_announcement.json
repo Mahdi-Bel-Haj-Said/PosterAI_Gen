@@ -1,0 +1,29 @@
+{
+  "_meta": {
+    "game": "valorant",
+    "poster_type": "tournament_announcement",
+    "mode": "fresh",
+    "output_format": "portrait_1080x1920"
+  },
+  "tournament": {
+    "name": "",
+    "logo_path": null,
+    "start_date": "",
+    "location": null,
+    "prize_pool": null,
+    "teams_count": null,
+    "format": null,
+    "tagline": null,
+    "sub_tagline": null,
+    "circuit": null
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#7B2FFF",
+    "energy": "intense"
+  }
+}

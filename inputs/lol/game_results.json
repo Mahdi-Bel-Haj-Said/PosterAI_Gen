@@ -1,0 +1,49 @@
+{
+  "_meta": {
+    "game": "league_of_legends",
+    "poster_type": "game_results",
+    "mode": "fresh",
+    "output_format": "square_1080x1080"
+  },
+  "tournament": {
+    "name": "EWC 2025",
+    "logo_path": null,
+    "phase": "playoffs"
+  },
+  "match": {
+    "team1": {
+      "name": "GNG",
+      "short_name": "GNG",
+      "logo_path": "assets/logos/GNG_logo.png",
+      "score": 2
+    },
+    "team2": {
+      "name": "JSK",
+      "short_name": "JSK",
+      "logo_path": "assets/logos/JSK_logo.png",
+      "score": 3
+    },
+    "format": "bo5",
+    "date": ""
+  },
+  "player_feature": {
+    "enabled": true,
+    "image_path": "assets/player_images/player1.png"
+  },
+  "mvp": {
+    "enabled": false,
+    "player_name": null,
+    "stat_label": null,
+    "stat_value": null,
+    "image_path": null
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#1e6c7b",
+    "energy": "intense"
+  }
+}

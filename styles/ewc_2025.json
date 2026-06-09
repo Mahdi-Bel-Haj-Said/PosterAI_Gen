@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "tournament_id": "ewc_2025",
+  "status": "approved",
+  "created_at": "2026-05-18T19:29:21.007381Z",
+  "approved_at": "2026-05-18T19:30:45.267945Z",
+  "source_poster_path": "outputs\\poster_stage3_from_saved_prompt_20260505_120859.png",
+  "palette": [
+    "#020617",
+    "#3a69bd",
+    "#192051",
+    "#0d091d",
+    "#010618"
+  ],
+  "color_temperature": "cool",
+  "lighting": "Moody with a strong blue neon glow and subtle lens flare.",
+  "atmosphere": "Dark and mysterious with an urban edge.",
+  "particle_effects": "Sparklers and faint smoke effects.",
+  "energy": "intense",
+  "sd_style_keywords": "urban battlefield, neon blue, dark mysterious, high contrast"
+}

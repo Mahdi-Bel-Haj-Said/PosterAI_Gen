@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "game": "league_of_legends",
+    "poster_type": "roster_reveal",
+    "mode": "fresh",
+    "output_format": "portrait_1080x1920"
+  },
+  "team": {
+    "name": "",
+    "logo_path": ""
+  },
+  "roster": {
+    "season": null,
+    "head_coach": null,
+    "players": [
+      { "ign": "", "role": "Top", "image_path": null, "nationality_flag_path": null, "is_new_signing": false },
+      { "ign": "", "role": "Jungle", "image_path": null, "nationality_flag_path": null, "is_new_signing": false },
+      { "ign": "", "role": "Mid", "image_path": null, "nationality_flag_path": null, "is_new_signing": false },
+      { "ign": "", "role": "Bot", "image_path": null, "nationality_flag_path": null, "is_new_signing": false },
+      { "ign": "", "role": "Support", "image_path": null, "nationality_flag_path": null, "is_new_signing": false }
+    ]
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#7B2FFF",
+    "energy": "intense"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "_meta": {
+    "game": "valorant",
+    "poster_type": "tournament_banner",
+    "mode": "fresh",
+    "output_format": "landscape_1920x1080"
+  },
+  "tournament": {
+    "name": "",
+    "logo_path": null,
+    "date_range": null,
+    "location": null,
+    "prize_pool": null,
+    "tagline": null,
+    "circuit": null
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#7B2FFF",
+    "energy": "intense"
+  }
+}

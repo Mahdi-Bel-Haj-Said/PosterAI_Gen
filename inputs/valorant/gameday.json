@@ -1,0 +1,47 @@
+{
+  "_meta": {
+    "game": "valorant",
+    "poster_type": "gameday",
+    "mode": "fresh",
+    "output_format": "portrait_1080x1920"
+  },
+  "tournament": {
+    "name": "",
+    "logo_path": null,
+    "phase": null,
+    "circuit": null
+  },
+  "match": {
+    "team1": {
+      "name": "",
+      "short_name": "",
+      "logo_path": ""
+    },
+    "team2": {
+      "name": "",
+      "short_name": "",
+      "logo_path": ""
+    },
+    "format": null,
+    "date": "",
+    "time": "",
+    "timezone": "CET"
+  },
+  "stream": {
+    "platform": null,
+    "url": null
+  },
+  "player_feature": {
+    "enabled": false,
+    "image_path": null
+  },
+  "sponsors": {
+    "enabled": false,
+    "logos": []
+  },
+  "design": {
+    "vibe": "cyberpunk",
+    "primary_color": "#7B2FFF",
+    "energy": "intense"
+  }
+}
