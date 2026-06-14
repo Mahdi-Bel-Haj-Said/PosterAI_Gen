@@ -38,6 +38,10 @@ const Icon = ({ name, size = 16 }) => {
     twitter: <path d="M3 3l6.5 8.5L3.4 17h1.9l5.1-5.4 4 5.4H17l-6.8-9 6.3-8h-1.9L9.9 9.7 5.6 3z" fill="currentColor" stroke="none"/>,
     facebook: <path d="M12.5 17v-6h2l.3-2.5H12.5V7c0-.7.2-1.2 1.2-1.2h1.3V3.6c-.2 0-1-.1-1.9-.1-1.9 0-3.2 1.2-3.2 3.3v1.7H7.5V11h2.4v6z" fill="currentColor" stroke="none"/>,
     instagram: <><rect x="3" y="3" width="14" height="14" rx="4"/><circle cx="10" cy="10" r="3.5"/><circle cx="14.3" cy="5.7" r="0.7" fill="currentColor" stroke="none"/></>,
+    // Filled 5-point star. Rendered solid (fill=currentColor) so the rating UI
+    // can toggle "active vs inactive" purely by changing the wrapper's color
+    // (bright accent vs dim grey) instead of swapping two icon variants.
+    star: <path d="M10 2.2l2.36 4.78 5.27.77-3.81 3.72.9 5.25L10 14.25 5.28 16.72l.9-5.25-3.81-3.72 5.27-.77z" fill="currentColor" stroke="currentColor" strokeWidth="0.5"/>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 20 20" fill="none"

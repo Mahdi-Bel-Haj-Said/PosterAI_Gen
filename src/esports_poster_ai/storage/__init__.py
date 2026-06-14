@@ -43,10 +43,31 @@ def get_storage(settings: Optional[Settings] = None) -> Storage:
     return LocalStorage(root=local_root)
 
 
-def get_keys(settings: Optional[Settings] = None) -> StorageKeys:
-    """Return the key builder bound to the configured R2_KEY_PREFIX."""
+def get_keys(
+    settings: Optional[Settings] = None, *, platform_id: Optional[str] = None
+) -> StorageKeys:
+    """
+    Return the key builder bound to the configured R2_KEY_PREFIX.
+
+    When `platform_id` is given, every key this builder produces is namespaced
+    under `.../platforms/{platform_id}/...`, giving each integrating platform a
+    private object-storage subtree (its orgs can reuse ids across platforms with
+    no collision). When omitted (CLI / dev / single-tenant), the historical flat
+    `{prefix}/orgs/...` layout is used unchanged.
+
+    System data (the shared background pool) is always addressed via a builder
+    created WITHOUT a platform, so it stays at `{prefix}/system/...`.
+    """
     s = settings or get_settings()
-    return StorageKeys(prefix=s.r2_key_prefix)
+    prefix = s.r2_key_prefix
+    if platform_id:
+        # The platform id is a single path segment; reject separators so it can't
+        # escape the namespace (mirrors StorageKeys._segment for org/tournament).
+        pid = str(platform_id).strip()
+        if "/" in pid or "\\" in pid or pid in {".", ".."}:
+            raise ValueError(f"platform_id is not a valid path segment: {platform_id!r}")
+        prefix = f"{prefix.rstrip('/')}/platforms/{pid}"
+    return StorageKeys(prefix=prefix)
 
 
 __all__ = [

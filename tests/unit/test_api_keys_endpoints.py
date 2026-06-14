@@ -37,14 +37,14 @@ def client(store, monkeypatch) -> TestClient:
 
 # ----------------------------------------------------------------- admin auth
 def test_post_requires_admin_token(client):
-    resp = client.post("/v1/api-keys", json={"org_id": "1"})
+    resp = client.post("/v1/api-keys", json={"platform_id": "1"})
     assert resp.status_code == 401  # no X-Admin-Token header
 
 
 def test_post_rejects_wrong_admin_token(client):
     resp = client.post(
         "/v1/api-keys",
-        json={"org_id": "1"},
+        json={"platform_id": "1"},
         headers={"X-Admin-Token": "wrong"},
     )
     assert resp.status_code == 401
@@ -54,12 +54,12 @@ def test_post_rejects_wrong_admin_token(client):
 def test_post_issues_key_and_returns_plaintext_once(client, store):
     resp = client.post(
         "/v1/api-keys",
-        json={"org_id": "1", "name": "prod"},
+        json={"platform_id": "1", "name": "prod"},
         headers={"X-Admin-Token": ADMIN_TOKEN},
     )
     assert resp.status_code == 201
     body = resp.json()
-    assert body["org_id"] == "1"
+    assert body["platform_id"] == "1"
     assert body["name"] == "prod"
     assert body["key"].startswith(KEY_TOKEN_PREFIX)
     assert body["key_prefix"] and len(body["key_prefix"]) == 12
@@ -72,12 +72,12 @@ def test_post_issues_key_and_returns_plaintext_once(client, store):
 # ----------------------------------------------------------------- list
 def test_list_returns_org_keys_without_plaintext(client):
     headers = {"X-Admin-Token": ADMIN_TOKEN}
-    client.post("/v1/api-keys", json={"org_id": "1"}, headers=headers)
-    client.post("/v1/api-keys", json={"org_id": "1", "name": "ci"}, headers=headers)
-    client.post("/v1/api-keys", json={"org_id": "2"}, headers=headers)
+    client.post("/v1/api-keys", json={"platform_id": "1"}, headers=headers)
+    client.post("/v1/api-keys", json={"platform_id": "1", "name": "ci"}, headers=headers)
+    client.post("/v1/api-keys", json={"platform_id": "2"}, headers=headers)
 
     body = client.get(
-        "/v1/api-keys", params={"org_id": "1"}, headers=headers
+        "/v1/api-keys", params={"platform_id": "1"}, headers=headers
     ).json()
     assert body["count"] == 2
     for k in body["keys"]:
@@ -89,7 +89,7 @@ def test_list_returns_org_keys_without_plaintext(client):
 def test_delete_revokes_and_404_after(client, store):
     headers = {"X-Admin-Token": ADMIN_TOKEN}
     issued = client.post(
-        "/v1/api-keys", json={"org_id": "1"}, headers=headers
+        "/v1/api-keys", json={"platform_id": "1"}, headers=headers
     ).json()
     key_id = issued["key_id"]
 
@@ -101,7 +101,7 @@ def test_delete_revokes_and_404_after(client, store):
     assert record.revoked is True
     # And it's excluded from the default list.
     listed = client.get(
-        "/v1/api-keys", params={"org_id": "1"}, headers=headers
+        "/v1/api-keys", params={"platform_id": "1"}, headers=headers
     ).json()
     assert listed["count"] == 0
 

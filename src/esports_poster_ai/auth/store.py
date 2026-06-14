@@ -79,16 +79,16 @@ class ApiKeyStore:
         self._col = client[s.mongodb_db]["api_keys"]
 
     # ---------------------------------------------------------------- issue
-    def issue(self, *, org_id: str, name: Optional[str] = None) -> Tuple[ApiKey, str]:
+    def issue(self, *, platform_id: str, name: Optional[str] = None) -> Tuple[ApiKey, str]:
         """
-        Generate, store, and return a new API key.
+        Generate, store, and return a new API key for a platform.
 
         Returns `(api_key_record, plaintext_key)`. The plaintext is the caller's
         only chance to see the secret — it is never stored or retrievable later.
         """
         plaintext, prefix, key_hash = generate_key()
         api_key = ApiKey(
-            org_id=org_id,
+            platform_id=platform_id,
             name=name,
             key_prefix=prefix,
             key_hash=key_hash,
@@ -96,7 +96,7 @@ class ApiKeyStore:
         self._col.insert_one(_to_doc(api_key))
         logger.info(
             "api_key.issued",
-            extra={"key_id": api_key.key_id, "org_id": org_id, "key_prefix": prefix},
+            extra={"key_id": api_key.key_id, "platform_id": platform_id, "key_prefix": prefix},
         )
         return api_key, plaintext
 
@@ -105,10 +105,10 @@ class ApiKeyStore:
         doc = self._col.find_one({"_id": key_id})
         return _from_doc(doc) if doc else None
 
-    def list_for_org(
-        self, org_id: str, *, include_revoked: bool = False, limit: int = 100
+    def list_for_platform(
+        self, platform_id: str, *, include_revoked: bool = False, limit: int = 100
     ) -> List[ApiKey]:
-        query: Dict[str, Any] = {"org_id": org_id}
+        query: Dict[str, Any] = {"platform_id": platform_id}
         if not include_revoked:
             query["revoked"] = False
         cursor = self._col.find(query).sort("created_at", -1).limit(limit)

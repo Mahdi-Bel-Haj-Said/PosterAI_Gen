@@ -42,9 +42,10 @@ def client(store, monkeypatch) -> TestClient:
 
     # POST calls enqueue_poster_job — swap it for one that writes to the
     # mongomock store and skips Redis.
-    def fake_enqueue(*, input_data, org_id, tournament_id, mode, settings=None):
+    def fake_enqueue(*, input_data, org_id, tournament_id, mode, platform_id=None, settings=None):
         return store.create(
-            input_data=input_data, org_id=org_id, tournament_id=tournament_id, mode=mode
+            input_data=input_data, org_id=org_id, tournament_id=tournament_id,
+            mode=mode, platform_id=platform_id,
         )
 
     monkeypatch.setattr(posters_route, "enqueue_poster_job", fake_enqueue)

@@ -15,7 +15,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
+from esports_poster_ai.api.deps import AuthContext, get_auth_context, get_org_store
 from esports_poster_ai.api.schemas import AssetListResponse, AssetResponse
+from esports_poster_ai.orgs.store import OrgStore
 from esports_poster_ai.assets.store import AssetStore
 from esports_poster_ai.config import get_settings
 from esports_poster_ai.domain.asset import Asset
@@ -73,7 +75,11 @@ def _asset_to_response(asset: Asset, storage: Storage) -> AssetResponse:
 # ---------------------------------------------------------------- create
 @router.post("", status_code=201, response_model=AssetResponse)
 def upload_asset(
-    org_id: str = Form(..., description="Organization id this asset belongs to."),
+    org_id: Optional[str] = Form(
+        None,
+        description="Organization id this asset belongs to. Omit when "
+        "authenticating with an API key (taken from the key).",
+    ),
     asset_type: AssetType = Form(..., description="Asset folder type."),
     name: Optional[str] = Form(None, description="Optional human label (e.g. 'FNATIC logo')."),
     team: Optional[str] = Form(
@@ -90,8 +96,12 @@ def upload_asset(
     ),
     file: UploadFile = File(..., description="Image file (PNG / JPEG / WEBP)."),
     store: AssetStore = Depends(get_asset_store),
+    auth: AuthContext = Depends(get_auth_context),
+    org_store: OrgStore = Depends(get_org_store),
 ) -> AssetResponse:
     """Upload an asset image. Returns the asset's id, storage key, and a signed URL."""
+    org_id = auth.require_org(org_id)
+    auth.require_org_registered(org_id, org_store)
     content = file.file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Empty file.")
@@ -141,14 +151,17 @@ def upload_asset(
 
     ext = _extension_for(content_type, file.filename)
     asset_id = uuid4().hex
-    storage_key = get_keys().asset(org_id, asset_type, asset_id, ext)
+    storage_key = get_keys(platform_id=auth.platform_id).asset(org_id, asset_type, asset_id, ext)
 
     storage = get_storage()
     storage.put_bytes(storage_key, content, content_type=content_type)
 
     # One logo per team: replacing a team's logo removes the previous one(s).
     if asset_type == AssetType.TEAM_LOGO and team:
-        for prior in store.list_for_org(org_id, asset_type=AssetType.TEAM_LOGO, team=team, limit=100):
+        for prior in store.list_for_org(
+            org_id, asset_type=AssetType.TEAM_LOGO, team=team, limit=100,
+            platform_id=auth.platform_id,
+        ):
             try:
                 storage.delete(prior.storage_key)
             except Exception:  # noqa: BLE001 — stale metadata cleanup must still proceed
@@ -165,6 +178,7 @@ def upload_asset(
         size_bytes=len(content),
         name=name,
         team=team,
+        platform_id=auth.platform_id,
     )
     logger.info("api.asset.uploaded", extra={"asset_id": asset_id, "storage_key": storage_key, "team": team})
     return _asset_to_response(asset, storage)
@@ -173,14 +187,20 @@ def upload_asset(
 # ---------------------------------------------------------------- read
 @router.get("", response_model=AssetListResponse)
 def list_assets(
-    org_id: str = Query(..., description="Organization id."),
+    org_id: Optional[str] = Query(
+        None, description="Organization id. Omit when authenticating with an API key."
+    ),
     asset_type: Optional[AssetType] = Query(None, description="Filter by asset folder."),
     team: Optional[str] = Query(None, description="Filter by owning team (case-insensitive)."),
     limit: int = Query(50, ge=1, le=200),
     store: AssetStore = Depends(get_asset_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> AssetListResponse:
     """List an org's assets, most recent first."""
-    assets = store.list_for_org(org_id, asset_type=asset_type, team=team, limit=limit)
+    org_id = auth.require_org(org_id)
+    assets = store.list_for_org(
+        org_id, asset_type=asset_type, team=team, limit=limit, platform_id=auth.platform_id
+    )
     storage = get_storage()
     return AssetListResponse(
         assets=[_asset_to_response(a, storage) for a in assets],
@@ -192,11 +212,13 @@ def list_assets(
 def get_asset(
     asset_id: str,
     store: AssetStore = Depends(get_asset_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> AssetResponse:
     """Get an asset's metadata + a signed URL."""
     asset = store.get(asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+    auth.assert_platform(asset.platform_id)
     return _asset_to_response(asset, get_storage())
 
 
@@ -205,11 +227,13 @@ def get_asset(
 def delete_asset(
     asset_id: str,
     store: AssetStore = Depends(get_asset_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> Response:
     """Remove an asset from R2 and its metadata row."""
     asset = store.get(asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+    auth.assert_platform(asset.platform_id)
 
     get_storage().delete(asset.storage_key)
     store.delete(asset_id)

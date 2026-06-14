@@ -65,9 +65,11 @@ class AssetStore:
         size_bytes: int,
         name: Optional[str] = None,
         team: Optional[str] = None,
+        platform_id: Optional[str] = None,
     ) -> Asset:
         asset = Asset(
             asset_id=asset_id,
+            platform_id=platform_id,
             org_id=org_id,
             asset_type=asset_type,
             filename=filename,
@@ -96,8 +98,11 @@ class AssetStore:
         asset_type: Optional[AssetType] = None,
         team: Optional[str] = None,
         limit: int = 50,
+        platform_id: Optional[str] = None,
     ) -> List[Asset]:
         query: Dict[str, Any] = {"org_id": org_id}
+        if platform_id is not None:
+            query["platform_id"] = platform_id
         if asset_type is not None:
             query["asset_type"] = (
                 asset_type.value if hasattr(asset_type, "value") else str(asset_type)

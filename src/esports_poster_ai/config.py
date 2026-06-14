@@ -119,6 +119,16 @@ class Settings(BaseSettings):
             "When unset, admin endpoints refuse all requests."
         ),
     )
+    api_key_required: bool = Field(
+        default=False,
+        description=(
+            "When True, every org-scoped endpoint requires a valid "
+            "'Authorization: Bearer <api-key>' and pins org_id from that key. "
+            "When False (dev default), requests may pass org_id directly and a "
+            "key is optional — present keys are still validated and enforced. "
+            "Flip to True before exposing the API beyond localhost."
+        ),
+    )
     cost_per_poster_usd: float = Field(
         default=0.054,
         description="Estimated end-to-end cost of one completed poster (billing trail).",

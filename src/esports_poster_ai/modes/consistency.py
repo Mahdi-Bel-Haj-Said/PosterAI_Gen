@@ -27,6 +27,8 @@ from esports_poster_ai.clients.openai_client import OpenAIClient
 from esports_poster_ai.config import Settings, get_settings
 from esports_poster_ai.modes.fresh import StatusCallback, run_fresh
 from esports_poster_ai.stages.poster_generator import PosterResult
+from esports_poster_ai.storage import StorageKeys
+from esports_poster_ai.storage.base import Storage
 from esports_poster_ai.style_dna.repository import load_active
 
 logger = logging.getLogger(__name__)
@@ -40,15 +42,19 @@ def run_consistency(
     on_status: StatusCallback = None,
     client: Optional[OpenAIClient] = None,
     settings: Optional[Settings] = None,
+    storage: Optional[Storage] = None,
+    keys: Optional[StorageKeys] = None,
 ) -> PosterResult:
     """
     Run the pipeline in consistency mode for `org_id` / `tournament_id`.
 
-    `input_data` is the parsed poster input JSON (a dict). Returns the
-    `PosterResult` for the generated poster.
+    `input_data` is the parsed poster input JSON (a dict). `keys` (platform-aware
+    when an API job supplies it) governs where the poster is written AND where the
+    Style DNA is read from, so both stay under the same platform namespace.
+    Returns the `PosterResult` for the generated poster.
     """
     s = settings or get_settings()
-    located = load_active(org_id, tournament_id, settings=s)
+    located = load_active(org_id, tournament_id, settings=s, storage=storage, keys=keys)
 
     style_dna_dict = None
     if located is None:
@@ -93,4 +99,6 @@ def run_consistency(
         on_status=on_status,
         client=client,
         settings=s,
+        storage=storage,
+        keys=keys,
     )

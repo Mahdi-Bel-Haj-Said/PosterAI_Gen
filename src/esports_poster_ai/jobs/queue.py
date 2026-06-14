@@ -46,12 +46,14 @@ def enqueue_poster_job(
     org_id: str,
     tournament_id: str,
     mode: JobMode,
+    platform_id: Optional[str] = None,
     settings: Optional[Settings] = None,
 ) -> Job:
     """
     Create a `queued` Job in MongoDB and push it onto the RQ queue.
 
     Returns the created `Job` (its `job_id` is the handle the caller polls).
+    `platform_id` (from the API key) scopes storage + isolation; None for CLI.
     """
     s = settings or get_settings()
 
@@ -61,6 +63,7 @@ def enqueue_poster_job(
         org_id=org_id,
         tournament_id=tournament_id,
         mode=mode,
+        platform_id=platform_id,
     )
 
     # The Mongo job is written first; the Redis push is a separate step. If the

@@ -27,6 +27,7 @@ class Asset(BaseModel):
     model_config = ConfigDict(extra="ignore", use_enum_values=True)
 
     asset_id: str = Field(default_factory=lambda: uuid4().hex)
+    platform_id: Optional[str] = None   # integrating platform (None for CLI/dev)
     org_id: str
     asset_type: AssetType
     filename: str = ""                  # original upload filename

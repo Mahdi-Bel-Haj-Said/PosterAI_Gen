@@ -17,12 +17,14 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import ValidationError
 
+from esports_poster_ai.api.deps import AuthContext, get_auth_context, get_org_store
 from esports_poster_ai.api.schemas import (
     CreatePosterRequest,
     JobListResponse,
     JobResponse,
     RefinePosterRequest,
 )
+from esports_poster_ai.orgs.store import OrgStore
 from esports_poster_ai.clients.gemini_client import GeminiError
 from esports_poster_ai.config import get_settings
 from esports_poster_ai.domain.inputs import PosterInput
@@ -53,7 +55,13 @@ def _job_to_response(job: Job, storage: Storage) -> JobResponse:
 
 
 @router.post("", status_code=202, response_model=JobResponse)
-def create_poster(req: CreatePosterRequest, response: Response) -> JobResponse:
+def create_poster(
+    req: CreatePosterRequest,
+    response: Response,
+    store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
+    org_store: OrgStore = Depends(get_org_store),
+) -> JobResponse:
     """
     Enqueue a poster-generation job.
 
@@ -61,22 +69,30 @@ def create_poster(req: CreatePosterRequest, response: Response) -> JobResponse:
     is taken from its `_meta.mode`. Returns the job immediately (202) — poll
     `GET /v1/posters/{job_id}` for the result.
 
-    Per-org rate limit (rolling day / week / month) is checked before enqueue
-    and the standard `X-RateLimit-*` headers are stamped on the response.
-    A breach returns HTTP 429 with `Retry-After` and a structured detail.
+    `org_id` comes from the request and (when authenticated) must name an org
+    registered under the caller's platform. The job is scoped to that platform.
+    Per-org rate limit (rolling day / week / month) is checked before enqueue and
+    the standard `X-RateLimit-*` headers are stamped on the response. A breach
+    returns HTTP 429 with `Retry-After`.
     """
+    org_id = auth.require_org(req.org_id)
+    limits = auth.resolve_org_limits(org_id, org_store)
+
     try:
         poster = PosterInput.model_validate(req.input)
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=jsonable_encoder(e.errors()))
 
-    quotas = check_quota_or_raise(req.org_id)
+    quotas = check_quota_or_raise(
+        org_id, platform_id=auth.platform_id, limits=limits, job_store=store
+    )
 
     job = enqueue_poster_job(
         input_data=req.input,
-        org_id=req.org_id,
+        org_id=org_id,
         tournament_id=req.tournament_id,
         mode=poster.meta.mode,
+        platform_id=auth.platform_id,
     )
     apply_quota_headers(response, quotas)
     logger.info("api.poster.created", extra={"job_id": job.job_id})
@@ -89,6 +105,8 @@ def refine_poster(
     req: RefinePosterRequest,
     response: Response,
     store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
+    org_store: OrgStore = Depends(get_org_store),
 ) -> JobResponse:
     """
     Apply a freeform edit to an existing completed poster.
@@ -101,6 +119,7 @@ def refine_poster(
     parent = store.get(job_id)
     if parent is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    auth.assert_platform(parent.platform_id)
     if parent.status != "completed" or not parent.storage_key:
         raise HTTPException(
             status_code=400,
@@ -110,7 +129,11 @@ def refine_poster(
             ),
         )
 
-    quotas = check_quota_or_raise(parent.org_id)
+    parent_org = org_store.get(parent.platform_id, parent.org_id)
+    parent_limits = parent_org.limits.model_dump() if parent_org else None
+    quotas = check_quota_or_raise(
+        parent.org_id, platform_id=parent.platform_id, limits=parent_limits, job_store=store
+    )
 
     parent_meta = (parent.input_data or {}).get("_meta") or {}
     refine_input = {
@@ -132,6 +155,7 @@ def refine_poster(
         org_id=parent.org_id,
         tournament_id=parent.tournament_id,
         mode="refine",
+        platform_id=parent.platform_id,
     )
     apply_quota_headers(response, quotas)
     logger.info(
@@ -145,11 +169,13 @@ def refine_poster(
 def get_poster(
     job_id: str,
     store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> JobResponse:
     """Get a job's status and result (a signed URL once completed)."""
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    auth.assert_platform(job.platform_id)
     return _job_to_response(job, get_storage())
 
 
@@ -157,6 +183,7 @@ def get_poster(
 def download_poster(
     job_id: str,
     store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> FastAPIResponse:
     """
     Stream the completed poster bytes back as an ``attachment`` download.
@@ -172,6 +199,7 @@ def download_poster(
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    auth.assert_platform(job.platform_id)
     if job.status != "completed" or not job.storage_key:
         raise HTTPException(
             status_code=400,
@@ -210,6 +238,7 @@ def generate_caption(
     job_id: str,
     regenerate: bool = Query(False, description="Force a new caption even if one is cached."),
     store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> JobResponse:
     """
     Get or generate a social caption for this completed poster.
@@ -227,6 +256,7 @@ def generate_caption(
     job = store.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    auth.assert_platform(job.platform_id)
     if job.status != "completed" or not job.storage_key:
         raise HTTPException(
             status_code=400,
@@ -251,13 +281,17 @@ def generate_caption(
 
 @router.get("", response_model=JobListResponse)
 def list_posters(
-    org_id: str = Query(..., description="Organization id to list posters for."),
+    org_id: Optional[str] = Query(
+        None, description="Organization id. Omit when authenticating with an API key."
+    ),
     tournament_id: Optional[str] = Query(None, description="Optional tournament filter."),
     limit: int = Query(50, ge=1, le=200),
     store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> JobListResponse:
     """List an org's posters, most recent first. Completed posters include a signed URL."""
-    jobs = store.list_for_org(org_id, limit=limit)
+    org_id = auth.require_org(org_id)
+    jobs = store.list_for_org(org_id, limit=limit, platform_id=auth.platform_id)
     if tournament_id:
         jobs = [j for j in jobs if j.tournament_id == tournament_id]
     storage = get_storage()

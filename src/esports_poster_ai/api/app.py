@@ -14,10 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from esports_poster_ai.api.routes.api_keys import router as api_keys_router
 from esports_poster_ai.api.routes.assets import router as assets_router
+from esports_poster_ai.api.routes.backgrounds import router as backgrounds_router
+from esports_poster_ai.api.routes.me import router as me_router
+from esports_poster_ai.api.routes.orgs import router as orgs_router
 from esports_poster_ai.api.routes.posters import router as posters_router
 from esports_poster_ai.api.routes.share import router as share_router
 from esports_poster_ai.api.routes.social import router as social_router
 from esports_poster_ai.api.routes.style_dnas import router as style_dnas_router
+from esports_poster_ai.api.routes.usage import admin_router as admin_usage_router
 from esports_poster_ai.api.routes.usage import router as usage_router
 from esports_poster_ai.api.schemas import HealthResponse
 from esports_poster_ai.jobs.queue import get_redis
@@ -45,8 +49,12 @@ app.include_router(assets_router)
 app.include_router(style_dnas_router)
 app.include_router(api_keys_router)
 app.include_router(usage_router)
+app.include_router(admin_usage_router)
 app.include_router(share_router)
 app.include_router(social_router)
+app.include_router(me_router)
+app.include_router(orgs_router)
+app.include_router(backgrounds_router)
 
 
 def _mongodb_ok() -> bool:

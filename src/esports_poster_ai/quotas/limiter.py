@@ -115,21 +115,34 @@ class _WindowState:
     duration: timedelta
 
 
-def _count_in_window(store: JobStore, org_id: str, since: datetime) -> tuple[int, Optional[datetime]]:
+def _count_in_window(
+    store: JobStore,
+    org_id: str,
+    since: datetime,
+    platform_id: Optional[str] = None,
+) -> tuple[int, Optional[datetime]]:
     """
     Count org jobs since `since` excluding failed; also return the oldest
     counted job's `created_at` so callers can compute a precise reset time.
+
+    Confined to `platform_id` when given — quota is per (platform, org).
     """
-    counts = store.usage_summary(org_id, since=since)
+    counts = store.usage_summary(org_id, since=since, platform_id=platform_id)
     used = sum(c for status, c in counts.items() if status not in _NON_COUNTED_STATUSES)
 
     # Oldest counted job in the window — drives the reset_at calculation.
     oldest_at: Optional[datetime] = None
     col = getattr(store, "_col", None)
     if col is not None and used > 0:
+        oldest_query: Dict[str, Any] = {
+            "org_id": org_id,
+            "created_at": {"$gte": since},
+            "status": {"$nin": list(_NON_COUNTED_STATUSES)},
+        }
+        if platform_id is not None:
+            oldest_query["platform_id"] = platform_id
         cursor = col.find(
-            {"org_id": org_id, "created_at": {"$gte": since},
-             "status": {"$nin": list(_NON_COUNTED_STATUSES)}},
+            oldest_query,
             {"created_at": 1, "_id": 0},
         ).sort("created_at", 1).limit(1)
         for doc in cursor:
@@ -151,25 +164,50 @@ class WindowQuota(BaseModel):
     reset_at: Optional[datetime] = None     # when one slot frees up (oldest + duration)
 
 
+def _effective_from_override(override: Dict[str, Any], s: Settings) -> Dict[str, int]:
+    """Merge a per-org limits override (possibly with None fields) over the defaults."""
+    eff = {
+        "day": s.quota_day_default,
+        "week": s.quota_week_default,
+        "month": s.quota_month_default,
+    }
+    for k in ("day", "week", "month"):
+        v = override.get(k)
+        if isinstance(v, int) and v >= 0:
+            eff[k] = v
+    return eff
+
+
 def compute_quotas(
     org_id: str,
     *,
+    platform_id: Optional[str] = None,
+    limits: Optional[Dict[str, Any]] = None,
     job_store: Optional[JobStore] = None,
     limits_store: Optional[OrgLimitsStore] = None,
     settings: Optional[Settings] = None,
     now: Optional[datetime] = None,
 ) -> List[WindowQuota]:
-    """Return the org's current state for all three rolling windows."""
+    """Return the org's current state for all three rolling windows.
+
+    Confined to `platform_id` when given — quota is per (platform, org). When
+    `limits` (the org's own day/week/month override, edited by the platform) is
+    supplied it wins; otherwise the legacy `org_limits` collection / service
+    defaults apply."""
     s = settings or get_settings()
     js = job_store or JobStore(settings=s)
-    ls = limits_store or OrgLimitsStore(settings=s)
-    limits = ls.get_effective(org_id, settings=s)
+    if limits is not None:
+        effective = _effective_from_override(limits, s)
+    else:
+        ls = limits_store or OrgLimitsStore(settings=s)
+        effective = ls.get_effective(org_id, settings=s)
+    limits = effective
     t = now or _now()
 
     results: List[WindowQuota] = []
     for label, duration in _WINDOWS:
         since = t - duration
-        used, oldest_at = _count_in_window(js, org_id, since)
+        used, oldest_at = _count_in_window(js, org_id, since, platform_id)
         limit = limits[label]
         reset_at = (oldest_at + duration) if oldest_at is not None else None
         results.append(
@@ -188,6 +226,8 @@ def compute_quotas(
 def check_quota_or_raise(
     org_id: str,
     *,
+    platform_id: Optional[str] = None,
+    limits: Optional[Dict[str, Any]] = None,
     job_store: Optional[JobStore] = None,
     limits_store: Optional[OrgLimitsStore] = None,
     settings: Optional[Settings] = None,
@@ -200,8 +240,8 @@ def check_quota_or_raise(
     `X-RateLimit-*` headers to the success response.
     """
     quotas = compute_quotas(
-        org_id, job_store=job_store, limits_store=limits_store,
-        settings=settings, now=now,
+        org_id, platform_id=platform_id, limits=limits, job_store=job_store,
+        limits_store=limits_store, settings=settings, now=now,
     )
     exceeded = [q for q in quotas if q.remaining <= 0]
     if exceeded:

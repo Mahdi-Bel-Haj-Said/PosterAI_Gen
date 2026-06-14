@@ -16,7 +16,11 @@ from esports_poster_ai.domain.style_dna import StyleDNA
 class CreatePosterRequest(BaseModel):
     """Body of `POST /v1/posters`."""
 
-    org_id: str = Field(description="Organization (tenant) identifier.")
+    org_id: Optional[str] = Field(
+        default=None,
+        description="Organization (tenant) identifier. Omit when authenticating "
+        "with an API key — the org is taken from the key. Required otherwise.",
+    )
     tournament_id: str = Field(description="Tournament identifier.")
     input: Dict[str, Any] = Field(
         description="The poster input JSON document (validated as PosterInput; "
@@ -128,10 +132,17 @@ class AssetListResponse(BaseModel):
 # ----------------------------------------------------------------- style DNA
 
 
+_ORG_ID_OPTIONAL = Field(
+    default=None,
+    description="Organization id. Omit when authenticating with an API key "
+    "(taken from the key); required otherwise.",
+)
+
+
 class ExtractStyleDNARequest(BaseModel):
     """Body of `POST /v1/style-dnas/{tournament_id}` — extract from a completed poster job."""
 
-    org_id: str
+    org_id: Optional[str] = _ORG_ID_OPTIONAL
     source_job_id: str = Field(
         description="job_id of a completed poster job to extract the DNA from."
     )
@@ -140,14 +151,14 @@ class ExtractStyleDNARequest(BaseModel):
 class UpdateStyleDNARequest(BaseModel):
     """Body of `PUT /v1/style-dnas/{tournament_id}` — replace the draft DNA."""
 
-    org_id: str
+    org_id: Optional[str] = _ORG_ID_OPTIONAL
     dna: Dict[str, Any] = Field(
         description="Full Style DNA document (validated as StyleDNA in the route)."
     )
 
 
 class ApproveStyleDNARequest(BaseModel):
-    org_id: str
+    org_id: Optional[str] = _ORG_ID_OPTIONAL
 
 
 class StyleDNAResponse(BaseModel):
@@ -191,13 +202,23 @@ class StyleDNAResponse(BaseModel):
         )
 
 
+class StyleDNAListResponse(BaseModel):
+    """All Style DNAs discovered for an org (one per tournament, active view)."""
+
+    style_dnas: List[StyleDNAResponse]
+    count: int
+
+
 # ----------------------------------------------------------------- api keys
 
 
 class IssueApiKeyRequest(BaseModel):
-    org_id: str
+    platform_id: str = Field(
+        description="The platform this key authenticates. A platform addresses "
+        "many orgs through one key."
+    )
     name: Optional[str] = Field(
-        default=None, description="Optional human label (e.g. 'Defendr production')."
+        default=None, description="Optional human label (e.g. 'Acme Esports Platform')."
     )
 
 
@@ -205,7 +226,7 @@ class IssuedApiKeyResponse(BaseModel):
     """Returned ONCE on creation — includes the plaintext key. Save it now."""
 
     key_id: str
-    org_id: str
+    platform_id: str
     name: Optional[str] = None
     key_prefix: str
     key: str = Field(description="Plaintext API key — shown only at creation. Save it.")
@@ -217,7 +238,7 @@ class ApiKeyResponse(BaseModel):
     """Subsequent reads — no plaintext, only metadata."""
 
     key_id: str
-    org_id: str
+    platform_id: str
     name: Optional[str] = None
     key_prefix: str
     created_at: datetime
@@ -229,7 +250,7 @@ class ApiKeyResponse(BaseModel):
     def from_api_key(cls, api_key: ApiKey) -> "ApiKeyResponse":
         return cls(
             key_id=api_key.key_id,
-            org_id=api_key.org_id,
+            platform_id=api_key.platform_id,
             name=api_key.name,
             key_prefix=api_key.key_prefix,
             created_at=api_key.created_at,
@@ -273,6 +294,7 @@ __all__ = [
     "UpdateStyleDNARequest",
     "ApproveStyleDNARequest",
     "StyleDNAResponse",
+    "StyleDNAListResponse",
     "IssueApiKeyRequest",
     "IssuedApiKeyResponse",
     "ApiKeyResponse",

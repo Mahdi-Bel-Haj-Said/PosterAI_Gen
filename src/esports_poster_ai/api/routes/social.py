@@ -31,6 +31,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from esports_poster_ai.api.deps import AuthContext, get_auth_context
 from esports_poster_ai.api.routes.posters import get_job_store
 from esports_poster_ai.jobs.store import JobStore
 from esports_poster_ai.social import PostizClient, PostizError, get_postiz_client
@@ -143,6 +144,7 @@ def create_post(
     req: CreatePostRequest,
     store: JobStore = Depends(get_job_store),
     client: PostizClient = Depends(get_postiz),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> CreatePostResponse:
     """
     Push a completed poster to one or more connected social accounts.
@@ -157,6 +159,7 @@ def create_post(
     job = store.get(req.job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {req.job_id}")
+    auth.assert_platform(job.platform_id)
     if job.status != "completed" or not job.storage_key:
         raise HTTPException(
             status_code=400,

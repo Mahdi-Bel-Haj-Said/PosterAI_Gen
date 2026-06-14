@@ -151,6 +151,31 @@ def _generate_with_runpod(input_data: Dict[str, Any], *, settings: Settings) -> 
     )
 
 
+# ---------------------------------------------------------------- pool listing
+_POOL_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def list_pool(
+    backgrounds_dir: Optional[Path] = None,
+    *,
+    settings: Optional[Settings] = None,
+) -> list[str]:
+    """
+    Return the file names in the local system background pool, sorted.
+
+    The single source of truth for "which system backgrounds exist". Exposed so
+    the HTTP API (`GET /v1/backgrounds`) can advertise the pool to integrators
+    without reaching into the filesystem itself. Missing directory → empty list.
+    """
+    s = settings or get_settings()
+    bg_dir = backgrounds_dir or s.backgrounds_dir
+    if not bg_dir.exists():
+        return []
+    return sorted(
+        p.name for p in bg_dir.iterdir() if p.suffix.lower() in _POOL_SUFFIXES
+    )
+
+
 # ---------------------------------------------------------------- source 3: system pool
 def _select_from_pool(bg_dir: Path) -> bytes:
     """Pick the first image alphabetically from the local backgrounds pool."""
@@ -168,4 +193,4 @@ def _select_from_pool(bg_dir: Path) -> bytes:
     return chosen.read_bytes()
 
 
-__all__ = ["select_background"]
+__all__ = ["select_background", "list_pool"]

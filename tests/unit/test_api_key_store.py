@@ -33,9 +33,9 @@ def test_generate_key_returns_prefixed_plaintext_and_consistent_hash():
 
 # ----------------------------------------------------------------- issue
 def test_issue_returns_plaintext_once_and_stores_only_hash(store: ApiKeyStore):
-    api_key, plaintext = store.issue(org_id="1", name="prod")
+    api_key, plaintext = store.issue(platform_id="1", name="prod")
     assert plaintext.startswith(KEY_TOKEN_PREFIX)
-    assert api_key.org_id == "1"
+    assert api_key.platform_id == "1"
     assert api_key.name == "prod"
     assert api_key.revoked is False
 
@@ -48,21 +48,21 @@ def test_issue_returns_plaintext_once_and_stores_only_hash(store: ApiKeyStore):
 
 # ----------------------------------------------------------------- verify
 def test_verify_resolves_a_valid_key(store: ApiKeyStore):
-    api_key, plaintext = store.issue(org_id="1")
+    api_key, plaintext = store.issue(platform_id="1")
     resolved = store.verify(plaintext)
     assert resolved is not None
     assert resolved.key_id == api_key.key_id
 
 
 def test_verify_returns_none_for_unknown_key(store: ApiKeyStore):
-    store.issue(org_id="1")
+    store.issue(platform_id="1")
     assert store.verify("epai_totally-fake-key") is None
     assert store.verify("not-an-epai-prefix") is None
     assert store.verify("") is None
 
 
 def test_verify_updates_last_used_at(store: ApiKeyStore):
-    api_key, plaintext = store.issue(org_id="1")
+    api_key, plaintext = store.issue(platform_id="1")
     assert api_key.last_used_at is None
     store.verify(plaintext)
     assert store.get(api_key.key_id).last_used_at is not None
@@ -70,23 +70,23 @@ def test_verify_updates_last_used_at(store: ApiKeyStore):
 
 # ----------------------------------------------------------------- list
 def test_list_filters_by_org_and_excludes_revoked_by_default(store: ApiKeyStore):
-    a, _ = store.issue(org_id="1")
-    b, _ = store.issue(org_id="1")
-    c, _ = store.issue(org_id="2")
+    a, _ = store.issue(platform_id="1")
+    b, _ = store.issue(platform_id="1")
+    c, _ = store.issue(platform_id="2")
     store.revoke(b.key_id)
 
-    org1 = store.list_for_org("1")
+    org1 = store.list_for_platform("1")
     assert {k.key_id for k in org1} == {a.key_id}
 
-    with_revoked = store.list_for_org("1", include_revoked=True)
+    with_revoked = store.list_for_platform("1", include_revoked=True)
     assert {k.key_id for k in with_revoked} == {a.key_id, b.key_id}
 
-    assert {k.key_id for k in store.list_for_org("2")} == {c.key_id}
+    assert {k.key_id for k in store.list_for_platform("2")} == {c.key_id}
 
 
 # ----------------------------------------------------------------- revoke
 def test_revoke_blocks_verify(store: ApiKeyStore):
-    api_key, plaintext = store.issue(org_id="1")
+    api_key, plaintext = store.issue(platform_id="1")
     assert store.revoke(api_key.key_id) is True
     assert store.verify(plaintext) is None
     # Idempotent — second revoke is a no-op.

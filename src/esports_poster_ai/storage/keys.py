@@ -143,5 +143,9 @@ class StorageKeys:
         """Key for a shared system background (not org-scoped)."""
         return f"{self.prefix}/system/backgrounds/{_segment(name, 'name')}"
 
+    def backgrounds_prefix(self) -> str:
+        """Listing prefix for the shared system background pool."""
+        return f"{self.prefix}/system/backgrounds/"
+
 
 __all__ = ["AssetType", "StorageKeys"]

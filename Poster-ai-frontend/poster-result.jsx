@@ -255,6 +255,11 @@ function PosterResult({ navigate, jobId }) {
             </div>
           </div>
 
+          {/* User feedback on output quality — UI-only for now (persists to
+              localStorage). When /v1/posters/{id}/rating ships, the commit()
+              call inside RatingCard fires the API call. */}
+          <RatingCard jobId={job.job_id} />
+
           {/* Native posting — backend (Postiz) is fully wired but the OAuth /
               account-connection UX is being deferred. Render a fully-styled
               preview of the upcoming UI (chips, caption, schedule, post button)
@@ -401,6 +406,152 @@ function MetaRow({ label, value, children }) {
     </div>
   );
 }
+
+
+// ---- RatingCard -------------------------------------------------------------
+// 1–10 star rating for the generated poster. UI-only for now — the score is
+// kept in localStorage keyed by job_id so testing across page refreshes works,
+// but no backend call is made. The persistence call-site is stubbed below;
+// swap the comment for a real `await window.api.rate(jobId, rating)` once the
+// /v1/posters/{id}/rating endpoint exists.
+//
+// UX:
+//   * 10 outline stars in a row.
+//   * Hover lights them up to that index (preview, no commit).
+//   * Click sets the score and shows a "Thanks!" toast.
+//   * Clicking the same star you already chose CLEARS the rating (so a misclick
+//     isn't a permanent "2/10").
+//   * Keyboard support: each star is a real <button>, so Tab + Space/Enter works.
+//   * "Reset" link appears next to the score once a rating is set.
+
+function RatingCard({ jobId }) {
+  const STORAGE_KEY = jobId ? `poster-rating:${jobId}` : null;
+
+  // Load any persisted score for THIS specific job. Bounded to 0..10 so a
+  // tampered localStorage entry can't push the UI into a weird state.
+  const _readStored = () => {
+    if (!STORAGE_KEY) return 0;
+    try {
+      const v = parseInt(window.localStorage.getItem(STORAGE_KEY) || "0", 10);
+      return Number.isFinite(v) && v >= 0 && v <= 10 ? v : 0;
+    } catch (_) {
+      return 0;
+    }
+  };
+
+  const [rating, setRating] = React.useState(_readStored);
+  const [hover, setHover]   = React.useState(0); // 0 = not hovering
+
+  // If we ever re-render against a different jobId (unlikely on this screen,
+  // but cheap to guard), re-read from storage so we don't show stale stars.
+  React.useEffect(() => { setRating(_readStored()); /* eslint-disable-line */ }, [jobId]);
+
+  const commit = (value) => {
+    // Click on the same star you already picked = clear.
+    const next = value === rating ? 0 : value;
+    setRating(next);
+    try {
+      if (STORAGE_KEY) {
+        if (next > 0) window.localStorage.setItem(STORAGE_KEY, String(next));
+        else          window.localStorage.removeItem(STORAGE_KEY);
+      }
+    } catch (_) { /* private-mode / quota — non-fatal */ }
+    // TODO(backend): once /v1/posters/{id}/rating exists, fire-and-forget:
+    //   window.api.ratePoster(jobId, next).catch(() => {});
+    if (next > 0) {
+      window.toast.success(`Thanks! You rated this poster ${next}/10.`);
+    }
+  };
+
+  const display = hover || rating;  // hover preview wins while present
+  const labelFor = (v) => {
+    if (v <= 0) return "Click a star to rate";
+    if (v <= 3) return "Needs work";
+    if (v <= 6) return "Decent";
+    if (v <= 8) return "Strong";
+    return "Excellent";
+  };
+
+  return (
+    <div className="card" style={{ padding: 18 }}>
+      <div className="row" style={{ gap: 12, marginBottom: 12, alignItems: "flex-start" }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 8,
+          background: "var(--crim-soft)", color: "var(--crim)",
+          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+        }}>
+          <Icon name="star" size={16} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>Rate this poster</div>
+          <div className="hint" style={{ marginTop: 2 }}>
+            Your score helps us tune generation quality. 1 = nope, 10 = nailed it.
+          </div>
+        </div>
+      </div>
+
+      {/* Star row */}
+      <div
+        role="radiogroup"
+        aria-label="Poster rating, 1 to 10"
+        onMouseLeave={() => setHover(0)}
+        className="row"
+        style={{ gap: 3, justifyContent: "space-between", marginBottom: 10 }}
+      >
+        {Array.from({ length: 10 }, (_, i) => {
+          const value = i + 1;
+          const lit = value <= display;
+          return (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={rating === value}
+              aria-label={`${value} out of 10`}
+              title={`${value}/10 — ${labelFor(value)}`}
+              onMouseEnter={() => setHover(value)}
+              onFocus={() => setHover(value)}
+              onBlur={() => setHover(0)}
+              onClick={() => commit(value)}
+              style={{
+                background: "transparent",
+                border: 0,
+                padding: 2,
+                cursor: "pointer",
+                color: lit ? "var(--crim)" : "var(--fg-4)",
+                transition: "color 120ms ease, transform 120ms ease",
+                transform: hover === value ? "scale(1.18)" : "scale(1)",
+                lineHeight: 0,
+              }}
+            >
+              <Icon name="star" size={22} />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Score readout */}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <span className="mono" style={{ fontSize: 10.5, color: "var(--fg-3)", letterSpacing: "0.06em" }}>
+          {display > 0 ? `${display}/10 · ${labelFor(display).toUpperCase()}` : "AWAITING RATING"}
+        </span>
+        {rating > 0 && (
+          <button
+            type="button"
+            onClick={() => commit(rating)}
+            className="btn btn-ghost"
+            style={{ padding: "2px 8px", fontSize: 11 }}
+            title="Clear your rating"
+          >
+            <Icon name="cross" size={10} /> Clear
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 
 
 // ---- NativePostPanel --------------------------------------------------------
@@ -1036,4 +1187,4 @@ function QuickShareModal({ platform, job, caption, onClose }) {
 }
 
 
-Object.assign(window, { PosterResult });
+Object.assign(window, { PosterResult, RatingCard });

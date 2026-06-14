@@ -25,8 +25,8 @@ class ApiKey(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     key_id: str = Field(default_factory=lambda: uuid4().hex)
-    org_id: str
-    name: Optional[str] = None        # human label ("Defendr production", "test key")
+    platform_id: str                   # the integrating platform this key authenticates
+    name: Optional[str] = None        # human label ("Acme Esports Platform", "test key")
     key_prefix: str                    # first ~12 chars of the plaintext, for lookup
     key_hash: str                      # sha256 hex of the full plaintext key
 

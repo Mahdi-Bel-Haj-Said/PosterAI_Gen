@@ -15,6 +15,7 @@ from esports_poster_ai.jobs.store import JobStore
 from esports_poster_ai.modes.consistency import run_consistency
 from esports_poster_ai.modes.fresh import run_fresh
 from esports_poster_ai.modes.refine import run_refine
+from esports_poster_ai.storage import get_keys
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,11 @@ def process_job(job_id: str) -> None:
     def on_status(status: str) -> None:
         store.update_status(job_id, status)
 
+    # Bind the key builder to the job's platform so every object this run writes
+    # (and the Style DNA it reads) lands under platforms/{platform_id}/. None
+    # platform → the historical flat layout.
+    keys = get_keys(platform_id=job.platform_id)
+
     try:
         if job.mode == "refine":
             result = run_refine(
@@ -41,6 +47,7 @@ def process_job(job_id: str) -> None:
                 org_id=job.org_id,
                 tournament_id=job.tournament_id,
                 on_status=on_status,
+                keys=keys,
             )
         elif job.mode == "consistency":
             result = run_consistency(
@@ -48,6 +55,7 @@ def process_job(job_id: str) -> None:
                 job.tournament_id,
                 org_id=job.org_id,
                 on_status=on_status,
+                keys=keys,
             )
         else:
             result = run_fresh(
@@ -55,6 +63,7 @@ def process_job(job_id: str) -> None:
                 org_id=job.org_id,
                 tournament_id=job.tournament_id,
                 on_status=on_status,
+                keys=keys,
             )
         store.mark_completed(
             job_id,

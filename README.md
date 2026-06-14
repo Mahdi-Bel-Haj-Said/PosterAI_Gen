@@ -38,7 +38,10 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 | Storage-backed asset reads (logos resolved from R2 keys at run time) | working |
 | HTTP API (FastAPI) — posters, assets, style-DNAs, api-keys, usage, health | working |
 | Async job queue (RQ + Redis) + worker — durable jobs persisted in MongoDB | working |
-| Multi-tenant scaffolding (`org_id` everywhere, `api_keys`, `usage_events`) | working (issuance + scoping; enforcement middleware partial) |
+| Multi-tenant model — **platform → org → tournament** (one API key per platform; many orgs per platform) | working |
+| 🟢 Per-platform API-key enforcement (`get_auth_context` — Bearer key → `platform_id`; per-platform storage namespacing + row filtering + `assert_platform`, gated by `API_KEY_REQUIRED`) | working |
+| 🟢 Org registry (`/v1/orgs` register / list / get / update / delete; per-org `tier`; `OrgStore`) | working |
+| 🟢 Self-serve endpoints — `GET /v1/me` (platform identity), `GET /v1/orgs/{id}` (tier + quota), `GET /v1/backgrounds` (system pool), `GET /v1/style-dnas` (org-wide list) | working |
 | React web UI (`Poster-ai-frontend/`) — Dashboard, Wizard, Job, Result | working |
 | 🟢 React web UI — History page, Brand Library page | working |
 | 🟢 Brand library: team-scoped assets, one-logo-per-team, quick-pick by team | working |
@@ -56,6 +59,10 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 | 🟢 Quick Share modal (Twitter / Facebook / Instagram) with editable caption + auto-download | working |
 | 🟢 Same-origin download proxy (`GET /v1/posters/{id}/download`) — real attachment, CORS-safe | working |
 | 🟢 Postiz backend integration (`/v1/social/integrations`, `/v1/social/post`) | working (UI shown as "Coming soon" preview) |
+| 🟢 Admin Usage & Billing dashboard (`GET /v1/admin/usage/orgs`) — sortable per-org stats, tier breakdown, top-N | working |
+| 🟢 Static subscription tiers (Free / Pro / Enterprise) + `tier_for_org()` seam for the real billing integration | working |
+| 🟢 Toast notification system (`toast.jsx`) — global `window.toast.{error,success,info}`, replaces `alert()` calls | working |
+| 🟢 1–10 star poster rating UI (localStorage-backed, backend hook stubbed) | working |
 | Defendr integration | not started |
 
 ---
@@ -269,6 +276,10 @@ esports-poster-ai/
 |       |   |-- __init__.py              # exports PostizClient, get_postiz_client()
 |       |   `-- postiz.py                # Postiz Public API client (integrations / upload / posts)
 |       |
+|       |-- billing/                     # 🟢 subscription tiers (placeholder for real billing)
+|       |   |-- __init__.py              # public exports
+|       |   `-- tiers.py                 # Free / Pro / Enterprise definitions + tier_for_org() seam
+|       |
 |       |-- prompt/                      # dynamic prompt assembler
 |       |   |-- assembler.py
 |       |   |-- router.py
@@ -313,7 +324,9 @@ esports-poster-ai/
 |   |-- dashboard.jsx                    # live job list (polled), in-progress + recent
 |   |-- wizard.jsx                       # 5-step Create Poster — controlled form + upload
 |   |-- job-progress.jsx                 # polls GET /v1/posters/{job_id}
-|   |-- poster-result.jsx                # signed-URL image + Download + Extract DNA
+|   |-- poster-result.jsx                # signed-URL image + Download + Extract DNA + 🟢 RatingCard + QuickShareModal
+|   |-- admin-usage.jsx                  # 🟢 admin Usage & Billing dashboard (sortable table, tier chips, top-N)
+|   |-- toast.jsx                        # 🟢 global Toaster + window.toast.{error,success,info}
 |   `-- tweaks-panel.jsx                 # design tokens panel
 |
 |-- tests/
@@ -480,6 +493,10 @@ API_HOST                     default: 0.0.0.0
 API_PORT                     default: 8000
 MAX_ASSET_SIZE_MB            default: 10
 ADMIN_TOKEN                  required for admin endpoints; blank = admin endpoints refuse all requests
+API_KEY_REQUIRED             default: false. When true, every org-scoped endpoint requires a valid
+                             `Authorization: Bearer <api-key>` and pins org_id from the key. When
+                             false (dev), org_id may be passed directly and a key is optional (but
+                             still validated when present). Set true before exposing beyond localhost.
 COST_PER_POSTER_USD          default: 0.054  (used by GET /v1/usage)
 
 PUBLIC_BASE_URL              default: http://localhost:8000
@@ -600,12 +617,24 @@ PUT  /v1/style-dnas/{tournament_id}                # replace draft with edited D
 POST /v1/style-dnas/{tournament_id}/approve        # promote draft -> approved
 DEL  /v1/style-dnas/{tournament_id}                # remove both objects
 
-POST /v1/api-keys           (admin)                # issue a hashed API key — plaintext returned ONCE
-GET  /v1/api-keys           (admin)                # list keys
+POST /v1/api-keys           (admin)                # issue a hashed API key FOR A PLATFORM (body: platform_id) — plaintext returned ONCE
+GET  /v1/api-keys?platform_id= (admin)             # list a platform's keys
 DEL  /v1/api-keys/{key_id}  (admin)                # revoke
 
 GET  /v1/usage?org_id=&period_start=&period_end=   # job counts + estimated_cost_usd over a window
 GET  /v1/usage/quota?org_id=                       # current rolling 24h / 7d / 30d windows
+
+GET  /v1/me                                        # 🟢 the caller's PLATFORM identity (platform_id, authenticated, org_count)
+
+POST /v1/orgs                                      # 🟢 register an org under the platform (body: org_id?, name?, tier?)
+GET  /v1/orgs                                      # 🟢 list the platform's registered orgs
+GET  /v1/orgs/{org_id}                             # 🟢 one org: tier + tier metadata + live rolling quota
+PATCH /v1/orgs/{org_id}                            # 🟢 update an org's name / tier / metadata
+DEL  /v1/orgs/{org_id}                             # 🟢 de-register an org (does not delete its stored posters/assets)
+
+GET  /v1/backgrounds                               # 🟢 list the shared system background pool (local pool + any R2 system backgrounds)
+GET  /v1/style-dnas?org_id=                        # 🟢 list ALL of an org's Style DNAs (one per tournament, active view)
+GET  /v1/admin/usage/orgs                          # 🟢 admin: per-org rollup — tier, posters, modes, rolling windows, tier-cap utilization, spend, MRR. Currently ungated; flip require_admin_token to lock it down.
 
 GET  /v1/social/integrations                       # 🟢 list connected social accounts (proxied from Postiz; 503 if not configured)
 POST /v1/social/post                               # 🟢 publish/schedule a poster to selected integrations via Postiz
@@ -616,9 +645,23 @@ GET  /p/{job_id}                                   # 🟢 PUBLIC share landing p
 
 The request/response schemas live in `src/esports_poster_ai/api/schemas.py`. The `input` field of `POST /v1/posters` is validated as the existing `PosterInput` — same schema the CLI uses — so the API and CLI consume identical JSON.
 
-### Authentication
+### Authentication & multi-tenancy
 
-`api_keys` is a hashed-key table (`auth/store.py`). The admin endpoints require `Authorization: Bearer <ADMIN_TOKEN>` (matched against `Settings.admin_token`). End-user endpoints currently accept any `org_id` for development; per-org enforcement is a small middleware drop-in away.
+The service is integrated by **platforms** (the paying customers — e.g. a tournament-management SaaS), and each platform has **many orgs** registered inside it. So the hierarchy is **platform → org → tournament**: a platform integrates once with a single API key and generates posters on behalf of all of its orgs.
+
+Two layers:
+
+- **Admin endpoints** (API-key issuance/revocation, admin usage) require an `X-Admin-Token` header matched against `Settings.admin_token`. A key is issued **for a platform**: `POST /v1/api-keys {"platform_id": "...", "name": "..."}`.
+- **🟢 Per-platform API-key auth** on every org-scoped endpoint, via the `get_auth_context` dependency in `api/deps.py`. A caller authenticates with `Authorization: Bearer <api-key>`; the key is verified against the hashed `api_keys` table (`auth/store.py`) and resolves to a **`platform_id`** (not an org). The request still carries `org_id` per call — the platform says which of *its* orgs the operation is for — and that org must be **registered under the platform** (`POST /v1/orgs`). Resources loaded by id (jobs, assets) are guarded by `assert_platform`, which returns 404 on cross-platform access, so one platform can never read another's data.
+
+  **Isolation is by construction:** every object is namespaced under `…/platforms/{platform_id}/orgs/{org_id}/…` in object storage, and job/asset rows carry `platform_id` and are filtered by it. Org ids are unique only *within* a platform, so two platforms can both have an org called `team-alpha` with no collision.
+
+  The gate has two modes, controlled by `API_KEY_REQUIRED`:
+
+  - **`false` (dev default)** — single-tenant localhost surface: `org_id` is passed directly, a key is optional, `platform_id` is null (flat storage layout), and there is no registration/isolation enforcement. The existing frontend keeps working untouched. Any key that *is* sent is still validated.
+  - **`true`** — a valid Bearer key is mandatory on every org-scoped endpoint (missing/invalid key → 401); the platform comes from the key, `org_id` must name an org registered under it (else 404), and all data is confined to that platform. **Flip this to `true` before exposing the API beyond localhost.**
+
+  This is what makes a real key-authenticated integration work: a platform is issued a key (admin endpoint), registers its orgs (`POST /v1/orgs`), and from then on every call is scoped and isolated to that platform.
 
 ---
 
@@ -694,6 +737,7 @@ The API base URL is set at the top of `EsportsPostAI.html` via `window.API_BASE`
 | Poster result | `#/result/{job_id}` | Renders the R2-signed-URL image. Real Download PNG (proxied through `/v1/posters/{id}/download` for a true Save dialog) + Copy share link (the permanent `/p/{job_id}` URL). "Extract & save as draft" calls `POST /v1/style-dnas/{tournament_id}`. 🟢 "Approve this style" promotes the draft. 🟢 "Refine" card sends a freeform prompt + this poster to `POST /v1/posters/{id}/refine` and routes to the new job. 🟢 **Quick Share** trio (Twitter / Facebook / Instagram) opens a modal with the editable Gemini caption + Copy button; Confirm copies the caption to clipboard, downloads the PNG, and opens the platform compose page. 🟢 **Post directly to your accounts** preview panel mirrors the upcoming Postiz-driven one-click posting + scheduling UI, fully visible but disabled behind a COMING SOON pill — backend is wired, the UI is parked until OAuth UX is polished. |
 | 🟢 History | `#/history` | Polls `GET /v1/posters` every 8 s. Status tab filters (All / Completed / In progress / Failed) + tournament dropdown + search. Cards link to result (completed) or job (in-progress/failed). |
 | 🟢 Brand library | `#/brand` | Tabbed catalog of `/v1/assets` per type. Team logos and player images are team-scoped (one logo per team enforced server-side); team selector at the top filters and drives uploads. Multi-file upload, per-tile delete. Background-removal checkbox (default on for logos/players, hidden on the Backgrounds tab). |
+| 🟢 Admin Usage & Billing | `#/admin/usage` | One `GET /v1/admin/usage/orgs` payload drives everything: 4 stat cards (orgs / posters / lifetime spend / MRR), subscription-tier breakdown chips, a sortable per-org table (tier badge, total posters, 24h/7d/30d rolling counts, avg-per-day, success rate, days active, mode-mix F/C/R pills, tier-cap utilization bar that goes red ≥ 90 %, lifetime spend, relative "last seen"), and a top-5 bar chart of biggest orgs by posters in the last 30 days. Auto-refresh every 30 s. Currently surfaces to everyone; one-line gate flip in the route makes it admin-only. |
 
 ### Asset uploads
 
@@ -769,10 +813,11 @@ Remaining loose ends:
 
 ### Phase 5 — Multi-tenancy — **partial**
 
-`api_keys` (hashed) and `usage_events` collections exist, `org_id` scopes every business row, `JobStore.usage_summary()` powers `GET /v1/usage`. Admin endpoints gate on `Settings.admin_token`. What's still missing:
+`api_keys` (hashed) and `usage_events` collections exist, `org_id` scopes every business row, `JobStore.usage_summary()` powers `GET /v1/usage`. Admin endpoints gate on `Settings.admin_token`.
 
-- **Middleware that extracts a tenant API key from `Authorization` and pins `org_id` to the request context.** Today the user-facing endpoints accept any `org_id` for development.
-- **Rate limiting + per-org quotas.** Deferred until the second real tenant lands.
+🟢 **Per-platform API-key enforcement is now wired in.** The service is sold to *platforms* (the integrating customers), each owning many orgs — so the key resolves to a `platform_id` and the request carries `org_id` per call (validated against the platform's org registry). The `get_auth_context` dependency (`api/deps.py`) verifies the Bearer key against the hashed `api_keys` table; every object is namespaced under `platforms/{platform_id}/…` and job/asset rows are filtered by `platform_id`, with `assert_platform` returning 404 on cross-platform access. Orgs are registered/managed via `/v1/orgs`. Gated behind `API_KEY_REQUIRED` (default `false` so the localhost dev flow is untouched; set `true` for production). See *Authentication & multi-tenancy* above. The remaining item:
+
+- **Rate limiting + per-org quotas** — ✅ the rolling-window quota enforcement is already shipped (see *Per-org rate limiting*). Sub-second token-bucket precision and max-parallel-jobs limits are still deferred until the second real tenant lands.
 
 ### Phase 6 — Defendr integration — not started
 
@@ -833,7 +878,7 @@ There is no rate-limit retry distinct from transient-error retry — a 429 from 
 
 🟢 ~~The web UI's wizard form is in-memory only — navigating away discards the state.~~ — **fixed**. Wizard draft (form + step) is persisted to `localStorage` under `epai_wizard_draft_v1` and cleared on generate or discard. Ephemeral fields (fetched DNAs, libraries) are stripped so re-load triggers a refresh.
 
-End-user API endpoints currently accept any `org_id` for development. The hashed-key table and admin issuance flow exist, but the bearer-token-to-`org_id` middleware that would pin a tenant on every request is not yet wired in. Treat the API as a localhost dev surface until that lands.
+🟢 ~~End-user API endpoints currently accept any `org_id` for development. The hashed-key table and admin issuance flow exist, but the bearer-token-to-tenant middleware is not yet wired in.~~ — **fixed**. `get_auth_context` (`api/deps.py`) verifies a Bearer API key, resolves it to a **platform**, namespaces and filters all data by `platform_id`, and requires the request's `org_id` to be registered under that platform (`/v1/orgs`). Gated behind `API_KEY_REQUIRED` (default `false` for the localhost dev flow); set it `true` before exposing the API publicly. See *Authentication & multi-tenancy*.
 
 ---
 
@@ -921,6 +966,24 @@ The result page is now a full social-publishing surface — auto-generated capti
 
 🟢 **Default back to localhost — ngrok no longer required for Quick Share.** The Quick Share flow (download PNG → copy caption to clipboard → open the platform compose URL in a new tab) is **entirely client-side and same-origin**: it never needs Twitter/Facebook/Instagram to scrape anything from your machine. The PNG is uploaded by the user inside the native composer, not pulled from a public URL. Result: `window.API_BASE` in `EsportsPostAI.html` and `PUBLIC_BASE_URL` in `.env` both default back to `http://localhost:8000`, and the dev loop is just FastAPI + Mongo + Redis again — no tunnel. The `/p/{job_id}` landing page, the `og:` / `twitter:` meta tags, and the `_fetch` ngrok-header wrapper all stay in the codebase, idle. Re-exposing the API via ngrok (or a real domain) is a single env-var flip the day you want shared `Copy share link` URLs to render image-card previews on Discord / Slack / Twitter / LinkedIn — no code changes.
 
+### 🟢 Admin Usage & Billing
+
+A real dashboard replaced the "Coming up next" placeholder at `#/admin/usage`. Surfaces every stat an operator needs to understand who's using the platform, who's about to hit their quota, and where the money is going — all from one API call.
+
+**Static subscription tiers (placeholder for real billing).** `billing/tiers.py` defines three hardcoded tiers as `TierInfo` Pydantic models: **Free** (30 posters/mo, $0), **Pro** (200 posters/mo, $49), **Enterprise** (2,000 posters/mo, $499). Each carries a `color_token` CSS variable name so badge styling stays centralised. `tier_for_org(org_id)` is a static map (`{"1": "pro", "demo-enterprise": "enterprise", …}`) with `free` as the default — **the single chokepoint** where a real billing-provider integration (Stripe, Defendr's billing service, etc.) plugs in. Every caller in the codebase looks up tiers through that function, never by reaching into the constants dict directly, so the swap doesn't ripple.
+
+**Single-query per-org rollup.** `JobStore.list_orgs_aggregate()` runs one MongoDB aggregation pipeline that returns, per `org_id`: total jobs / completed / failed, counts in rolling 24 h / 7 d / 30 d windows (completed-only — failures don't count toward billing), mode breakdown (fresh / consistency / refine), `first_activity_at` / `last_activity_at`, and `days_active_30d` (distinct calendar days with ≥ 1 completed poster — distinguishes power users from one-off spikes). The pipeline uses `$dateToString` + `$addToSet` for the days-active computation; a pure-Python fallback (`_fallback_orgs_aggregate`) kicks in automatically when the driver / backend (mongomock in tests, very old Mongo) can't run it, so the route never depends on a specific Mongo version.
+
+**`GET /v1/admin/usage/orgs`.** New route in `api/routes/usage.py` (its own `admin_router` so the `/v1/admin/*` prefix is clean to gate later). Returns an `AdminUsageResponse` with: a `List[AdminOrgStats]` (full per-org row), `AdminTotals` (cross-org headline numbers — orgs, lifetime posters, lifetime spend, MRR sum, 30-day completed), `AdminTierBreakdown` (chip-row counts), and the full `Dict[SubscriptionTier, TierInfo]` so the UI can render tier metadata without a second call. Tier utilization is computed as `100 × completed_30d / tier.monthly_poster_cap` and clamped to 0 in the UI's progress bar (over-quota orgs still report > 100 in JSON so the operator sees the breach). Currently UNGATED so the existing demo UI keeps working without auth wiring; one-line gate flip (`token = Depends(require_admin_token)`) makes it admin-only when the ADMIN_TOKEN-flavoured surface ships everywhere.
+
+**The dashboard UI.** `Poster-ai-frontend/admin-usage.jsx` is one self-contained component with no third-party charting deps — everything renders with plain divs + CSS variables, matching the existing tweaks-panel theme. Layout: header with refresh button and last-updated timestamp; four big stat cards (ORGS / POSTERS COMPLETED / EST. SPEND / MRR with sub-line context); a row of tier-breakdown chips colored by tier accent; a sortable table where each header is clickable (current sort key + direction shown in the table caption); each org row carries a colored tier badge, a 3-segment F/C/R mode-mix chip strip whose opacity scales with that mode's share, a tier-utilization progress bar that flips red ≥ 90 % / amber ≥ 70 % / cyan otherwise, and a relative-time "last seen". Bottom block: a top-5 bar chart of biggest orgs by posters in the last 30 days. Polls every 30 s plus a manual refresh button. Hooks are all declared above the early-return guards (Rules of Hooks — `useMemo` for `sortedOrgs` and `top5` runs even while `data` is null and just resolves to empty arrays).
+
+**Other UX polish landed alongside.**
+
+- **Toast notification system.** `toast.jsx` introduces a `<Toaster />` mounted inside `<Shell>` plus a `window.toast.{error, success, info}` global. Every previously-inline `alert("Upload failed: …")` now pushes a top-right card with a colored left border (crimson / green / cyan), an icon, the message, an `aria-live="polite"` announcement for screen readers, click-anywhere-to-dismiss, Escape support, and auto-dismiss after a type-dependent TTL (errors stay 6 s, success 3.2 s, info 4 s). Stack capped to 5 so a runaway loop can't paper the screen. The `AssetUpload` slots in the wizard now BOTH show their existing inline-red border (spatial context — which tile failed) AND emit a toast (room for a multi-line message like the new HD-floor 422), so the user sees both.
+- **Inline 1–10 star rating on the result page.** `RatingCard` in `poster-result.jsx` renders 10 filled-star icons that color-shift between bright crimson (selected / hovered) and dim grey. Per-star Tab focus, ARIA `role="radiogroup"` / `role="radio"` / `aria-checked`, semantic labels ("Needs work" / "Decent" / "Strong" / "Excellent"), click-the-same-star-again clears, and a `Clear` link appears once a score is set. Persisted to `localStorage` keyed by `poster-rating:<job_id>` so testing across page refreshes works. The future-backend hook is a marked TODO inside `commit()` — one line to swap in `window.api.ratePoster(jobId, next)` when `POST /v1/posters/{id}/rating` ships.
+- **Sponsor upload `accept` fix.** The Step-3 sponsor input in `wizard.jsx` was the lone outlier with `accept="image/*"` while the rest of the app enforces `image/png,image/jpeg,image/webp`. Tightened so the OS file dialog only offers supported formats.
+
 ---
 
 ## 🟢 Future enhancements
@@ -931,7 +994,7 @@ A grab bag of features that have come up during testing and design conversations
 | --- | --- |
 | ~~🟢 **Quick share to social media**~~ ✅ **Done** | Three buttons on the result page (Twitter / Facebook / Instagram) open a Quick Share modal: editable AI-generated caption + Copy button, Confirm triggers PNG download via the same-origin `/v1/posters/{id}/download` proxy, writes the caption to clipboard, and opens the platform compose page in a new tab. The public `/p/{job_id}` landing page (OG + Twitter Card meta tags) makes shared links render proper image previews on every major platform. Backend `social/postiz.py` + `/v1/social/*` is also wired for true one-click native posting through a self-hosted Postiz instance — currently shown as a `COMING SOON` preview while OAuth UX is polished. Future work along the same axis: LinkedIn / WhatsApp / Telegram / Discord buttons, Web Share API on mobile for native share-sheet integration. |
 | 🟢 **Local database for tests** | Spin Mongo + Redis as ephemeral containers (`testcontainers-python`) in `conftest.py`, or mock them with `mongomock` + `fakeredis`. Replaces "tests need MongoDB/Redis on localhost" with a self-contained suite that still exercises store/queue code paths. |
-| 🟢 **Usage & billing stats per org** | Aggregate `jobs` + `usage_events` per `org_id` into a dashboard view (posters this month, success rate, est. spend, tokens consumed by stage). The `cost_per_poster_usd` setting + the per-call token counts the OpenAI client already logs are the raw inputs. Surfaces under `#/admin/usage` (route already in the sidebar) and as `GET /v1/usage`. |
+| ~~🟢 **Usage & billing stats per org**~~ ✅ **Done** | Shipped: `GET /v1/admin/usage/orgs` returns one payload covering every org's tier, lifetime posters, 24h/7d/30d rolling counts, mode mix, success rate, distinct days active, lifetime + 30-day spend, tier-cap utilization %, plus cross-org totals and an MRR sum. The `#/admin/usage` screen renders all of it as 4 stat cards + tier chips + sortable table + top-5 bar chart, refreshing every 30 s. Three static subscription tiers (Free / Pro / Enterprise) defined in `billing/tiers.py` with `tier_for_org()` as the single seam for the real billing-provider integration. Future work along this axis: token-level cost attribution per stage (the OpenAI client already logs per-call token counts — those become a deeper "cost breakdown" view), historical time-series charts, and webhook hooks into the billing provider once it's wired. |
 | ~~🟢 **Tokens, rate limiting per org**~~ ✅ **Done** | Rolling 24h / 7d / 30d quotas, defaulting to 3/15/30 posters per org, enforced on `POST /v1/posters` and refine. 429 with `Retry-After`, full `X-RateLimit-*` headers, `GET /v1/usage/quota` endpoint, live nav-bar + dashboard chips. Per-org overrides via the `orgs` Mongo collection. Future work: max-parallel-jobs, token-level limits, optional Redis token-bucket for sub-second precision. |
 | 🟢 **Discord bot** | Slash command `/poster gameday team1 team2 ...` posts a follow-up "generating…" message and edits in the signed URL on completion. Backend wise it's a thin shim around `POST /v1/posters` + `GET /v1/posters/{id}`; the bot just reuses the public API with a per-server API key. |
 | 🟢 **Runpod fine-tuned SD background generation** | Fill in `stages/background.py:_generate_with_runpod`. Pipeline already routes to it when `background.source == "generated"`; the wizard already exposes the option behind a `SOON` chip. Steps documented in the function's docstring: read settings, build SD prompt from `design` + `_meta`, POST to Runpod, poll, cache by content hash. |

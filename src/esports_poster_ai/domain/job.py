@@ -41,7 +41,10 @@ class Job(BaseModel):
     job_id: str = Field(default_factory=lambda: uuid4().hex)
     status: JobStatus = "queued"
 
-    # Routing / tenancy.
+    # Routing / tenancy. `platform_id` is the integrating platform (from the API
+    # key); None for CLI / dev single-tenant runs. `org_id` is unique within the
+    # platform.
+    platform_id: Optional[str] = None
     org_id: str
     tournament_id: str
     mode: JobMode

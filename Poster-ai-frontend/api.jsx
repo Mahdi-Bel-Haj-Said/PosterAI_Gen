@@ -80,6 +80,13 @@ const api = {
     return _json(res);
   },
 
+  // Admin: per-org rollup for the Usage & Billing dashboard. One call returns
+  // tier breakdown, totals, and every org's stats in one payload.
+  async getAdminOrgUsage() {
+    const res = await _fetch(`${API_BASE}/v1/admin/usage/orgs`);
+    return _json(res);
+  },
+
   async listPosters({ orgId = DEFAULT_ORG_ID, tournamentId, limit = 50 } = {}) {
     const params = new URLSearchParams({ org_id: orgId, limit: String(limit) });
     if (tournamentId) params.set("tournament_id", tournamentId);

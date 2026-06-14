@@ -91,6 +91,9 @@ function App() {
   } else if (route.startsWith("/brand")) {
     content = <BrandLibrary navigate={navigate} />;
     crumbs = ["POSTER/AI", "BRAND LIBRARY"];
+  } else if (route.startsWith("/admin/usage")) {
+    content = <AdminUsage navigate={navigate} />;
+    crumbs = ["POSTER/AI", "ADMIN", "USAGE & BILLING"];
   } else if (jobMatch) {
     const jobId = jobMatch[1] || null;
     content = <JobProgress navigate={navigate} jobId={jobId} />;

@@ -45,16 +45,16 @@ def issue_api_key(
     store: ApiKeyStore = Depends(get_api_key_store),
 ) -> IssuedApiKeyResponse:
     """
-    Issue a new API key for an org. The plaintext is shown only here — save it.
+    Issue a new API key for a platform. The plaintext is shown only here — save it.
     """
-    api_key, plaintext = store.issue(org_id=req.org_id, name=req.name)
+    api_key, plaintext = store.issue(platform_id=req.platform_id, name=req.name)
     logger.info(
         "api.api_key.issued",
-        extra={"key_id": api_key.key_id, "org_id": api_key.org_id},
+        extra={"key_id": api_key.key_id, "platform_id": api_key.platform_id},
     )
     return IssuedApiKeyResponse(
         key_id=api_key.key_id,
-        org_id=api_key.org_id,
+        platform_id=api_key.platform_id,
         name=api_key.name,
         key_prefix=api_key.key_prefix,
         key=plaintext,
@@ -64,13 +64,13 @@ def issue_api_key(
 
 @router.get("", response_model=ApiKeyListResponse)
 def list_api_keys(
-    org_id: str = Query(..., description="Organization id to list keys for."),
+    platform_id: str = Query(..., description="Platform id to list keys for."),
     include_revoked: bool = Query(False, description="Include soft-deleted keys."),
     limit: int = Query(100, ge=1, le=500),
     store: ApiKeyStore = Depends(get_api_key_store),
 ) -> ApiKeyListResponse:
-    """List an org's keys (no plaintext — that's gone forever after creation)."""
-    keys = store.list_for_org(org_id, include_revoked=include_revoked, limit=limit)
+    """List a platform's keys (no plaintext — that's gone forever after creation)."""
+    keys = store.list_for_platform(platform_id, include_revoked=include_revoked, limit=limit)
     return ApiKeyListResponse(
         keys=[ApiKeyResponse.from_api_key(k) for k in keys],
         count=len(keys),
