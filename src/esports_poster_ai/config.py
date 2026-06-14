@@ -150,6 +150,32 @@ class Settings(BaseSettings):
         description="Default cap on posters per rolling 30-day window.",
     )
 
+    # Webhooks — push notifications to a platform's callback URL on job
+    # completion/failure. OFF by default: with this false the emit hook is a
+    # no-op and nothing about the existing pipeline changes.
+    webhooks_enabled: bool = Field(
+        default=False,
+        description="Master switch for outbound webhooks. False = no webhooks fire.",
+    )
+    webhook_timeout_seconds: float = Field(
+        default=5.0, description="Per-attempt HTTP timeout when POSTing to a client URL."
+    )
+    webhook_max_attempts: int = Field(
+        default=5, description="Max delivery attempts before a webhook is dead-lettered."
+    )
+    webhook_backoff_base_seconds: float = Field(
+        default=10.0,
+        description="Base for exponential backoff between delivery retries (base * 2**(attempt-1)).",
+    )
+    webhook_allow_insecure_urls: bool = Field(
+        default=False,
+        description=(
+            "Dev-only escape hatch: when true, http:// and private/loopback hosts "
+            "are accepted as callback URLs (e.g. to test against webhook.site over "
+            "http or a local listener). Keep false in production (HTTPS + SSRF guard)."
+        ),
+    )
+
     # Budget guards
     stage2_budget_usd: float = Field(
         default=0.10,

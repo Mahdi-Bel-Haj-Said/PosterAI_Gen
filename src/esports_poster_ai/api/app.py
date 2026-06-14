@@ -23,6 +23,7 @@ from esports_poster_ai.api.routes.social import router as social_router
 from esports_poster_ai.api.routes.style_dnas import router as style_dnas_router
 from esports_poster_ai.api.routes.usage import admin_router as admin_usage_router
 from esports_poster_ai.api.routes.usage import router as usage_router
+from esports_poster_ai.api.routes.webhooks import router as webhooks_router
 from esports_poster_ai.api.schemas import HealthResponse
 from esports_poster_ai.jobs.queue import get_redis
 from esports_poster_ai.jobs.store import JobStore
@@ -55,6 +56,7 @@ app.include_router(social_router)
 app.include_router(me_router)
 app.include_router(orgs_router)
 app.include_router(backgrounds_router)
+app.include_router(webhooks_router)
 
 
 def _mongodb_ok() -> bool:

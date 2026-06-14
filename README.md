@@ -42,6 +42,8 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 | 🟢 Per-platform API-key enforcement (`get_auth_context` — Bearer key → `platform_id`; per-platform storage namespacing + row filtering + `assert_platform`, gated by `API_KEY_REQUIRED`) | working |
 | 🟢 Org registry (`/v1/orgs` register / list / get / update / delete; per-org `tier`; `OrgStore`) | working |
 | 🟢 Self-serve endpoints — `GET /v1/me` (platform identity), `GET /v1/orgs/{id}` (tier + quota), `GET /v1/backgrounds` (system pool), `GET /v1/style-dnas` (org-wide list) | working |
+| 🟢 Client-editable per-org rate limits (`limits` on the org record; set via `POST`/`PATCH /v1/orgs`) | working |
+| 🟢 Outbound webhooks (`poster.completed` / `poster.failed`; HMAC-signed, retried, SSRF-guarded; gated by `WEBHOOKS_ENABLED`) | working |
 | React web UI (`Poster-ai-frontend/`) — Dashboard, Wizard, Job, Result | working |
 | 🟢 React web UI — History page, Brand Library page | working |
 | 🟢 Brand library: team-scoped assets, one-logo-per-team, quick-pick by team | working |
@@ -634,6 +636,14 @@ DEL  /v1/orgs/{org_id}                             # 🟢 de-register an org (do
 
 GET  /v1/backgrounds                               # 🟢 list the shared system background pool (local pool + any R2 system backgrounds)
 GET  /v1/style-dnas?org_id=                        # 🟢 list ALL of an org's Style DNAs (one per tournament, active view)
+
+PUT  /v1/webhook                                   # 🟢 register/replace the platform's callback URL (+events); secret returned ONCE
+GET  /v1/webhook                                   # 🟢 current webhook config (no secret)
+POST /v1/webhook/rotate-secret                     # 🟢 new signing secret
+POST /v1/webhook/test                              # 🟢 synchronous synthetic `ping` to the configured URL
+GET  /v1/webhook/deliveries                        # 🟢 recent delivery attempts (audit/debug)
+POST /v1/webhook/deliveries/{id}/replay            # 🟢 re-enqueue a past delivery
+DEL  /v1/webhook                                   # 🟢 disable webhooks
 GET  /v1/admin/usage/orgs                          # 🟢 admin: per-org rollup — tier, posters, modes, rolling windows, tier-cap utilization, spend, MRR. Currently ungated; flip require_admin_token to lock it down.
 
 GET  /v1/social/integrations                       # 🟢 list connected social accounts (proxied from Postiz; 503 if not configured)
@@ -808,7 +818,7 @@ FastAPI app at `python -m esports_poster_ai.api` exposes `/v1/posters`, `/v1/ass
 
 Remaining loose ends:
 
-- **Webhook callbacks on job completion** (deferred — polling is fine for the React UI, but a tenant integrating server-side would prefer push).
+- 🟢 **Webhook callbacks on job completion** — **done**. Per-platform signed webhooks (`poster.completed` / `poster.failed`) with HMAC-SHA256 signatures, an SSRF-guarded HTTPS callback registry (`PUT /v1/webhook`), a separate delivery queue with exponential-backoff retries + dead-letter, a delivery audit log + replay, and a synchronous `POST /v1/webhook/test`. Gated behind `WEBHOOKS_ENABLED` (default off; the emit hook is a wrapped no-op until turned on). See `webhooks/` + `api/routes/webhooks.py`.
 - **`Retry-After` honoring** on 429s (mentioned in *Known gaps*).
 
 ### Phase 5 — Multi-tenancy — **partial**
@@ -842,7 +852,7 @@ The critical path now runs through quality and tenancy, not plumbing:
 1. **Phase 1 PIL text-composite layer.** This is the gap that will bite first when a real tenant generates a wrong-score result poster.
 2. **Auth middleware that pins `org_id` from a bearer key.** Quick win; turns `org_id` from a per-request claim into a verified one. Required before the API is exposed beyond localhost.
 3. **Sponsor-bar storage support.** Closes the last asset-reading gap, mirrors what `_read_image` already does.
-4. **Webhook callbacks on job completion.** First-class server-to-server integration story.
+4. ~~**Webhook callbacks on job completion.**~~ 🟢 **done** — signed, retried, per-platform webhooks behind `WEBHOOKS_ENABLED` (see *Phase 4* loose ends and `webhooks/`).
 5. **Background pool in R2.** Curated artwork uploaded to `system/backgrounds/`; `select_background()` reads from storage instead of the local folder.
 6. **Defer rate-limiting and quotas** until the second tenant lands.
 

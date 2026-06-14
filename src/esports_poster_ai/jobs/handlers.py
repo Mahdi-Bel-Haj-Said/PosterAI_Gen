@@ -20,6 +20,25 @@ from esports_poster_ai.storage import get_keys
 logger = logging.getLogger(__name__)
 
 
+def _emit_webhook(store: JobStore, job_id: str, event: str) -> None:
+    """
+    Fire a webhook for a finished job — best-effort, never raises.
+
+    Lazily imported and fully guarded so that webhooks (a) cost nothing when
+    disabled and (b) can never fail or slow down job processing. `emit_job_event`
+    itself is a no-op unless WEBHOOKS_ENABLED is on and the job's platform has a
+    matching subscription.
+    """
+    try:
+        from esports_poster_ai.webhooks import emit_job_event
+
+        fresh = store.get(job_id)
+        if fresh is not None:
+            emit_job_event(fresh, event)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001 — webhooks must never break the pipeline
+        logger.exception("webhook.emit_failed", extra={"job_id": job_id, "event": event})
+
+
 def process_job(job_id: str) -> None:
     """Execute one job by id. Invoked by the RQ worker."""
     store = JobStore()
@@ -71,9 +90,11 @@ def process_job(job_id: str) -> None:
             storage_key=result.storage_key,
             local_path=str(result.local_path),
         )
+        _emit_webhook(store, job_id, "poster.completed")
     except Exception as e:  # noqa: BLE001 — any failure must land as a failed job
         logger.exception("job.failed", extra={"job_id": job_id})
         store.mark_failed(job_id, error=f"{type(e).__name__}: {e}")
+        _emit_webhook(store, job_id, "poster.failed")
 
 
 __all__ = ["process_job"]

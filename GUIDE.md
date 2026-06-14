@@ -262,7 +262,79 @@ async function generatePoster(orgId, tournamentId, input) {
 }
 ```
 
-> **Note:** completion is **poll-based** today (no webhooks yet). Poll `GET /v1/posters/{job_id}` until `completed`/`failed`. A generation takes roughly 20–60 seconds.
+> Polling is the simplest approach and always works. For a push-based flow (your backend gets notified instead of polling), use **webhooks** — see §9.5. A generation takes roughly 20–60 seconds.
+
+---
+
+## 9.5 Webhooks (push instead of poll)
+
+Instead of polling, we can **POST a signed event to your URL** the moment a poster finishes. (Webhooks must be enabled for your account — ask us if you'd like them on.)
+
+### Register your endpoint
+
+```bash
+curl -X PUT https://api.YOURDOMAIN.com/v1/webhook \
+  -H "Authorization: Bearer $KEY" \
+  -d '{"url": "https://your-app.com/hooks/epai",
+       "events": ["poster.completed", "poster.failed"]}'
+# → returns a "secret" (whsec_...) ONCE — store it securely.
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `PUT /v1/webhook` | Set/replace your callback URL + events. Returns the secret on first creation. |
+| `GET /v1/webhook` | Your current config (no secret). |
+| `POST /v1/webhook/rotate-secret` | Get a new signing secret. |
+| `POST /v1/webhook/test` | Send a synthetic `ping` to your URL right now. |
+| `GET /v1/webhook/deliveries` | Recent delivery attempts (status, response code) for debugging. |
+| `POST /v1/webhook/deliveries/{id}/replay` | Re-send a past delivery. |
+| `DELETE /v1/webhook` | Turn webhooks off. |
+
+URLs must be **HTTPS** and public (we reject internal/loopback addresses).
+
+### What you receive
+
+```jsonc
+POST https://your-app.com/hooks/epai
+Headers:
+  X-EPAI-Event: poster.completed
+  X-EPAI-Delivery: evt_abc123
+  X-EPAI-Signature: t=1751650000,v1=<hmac-sha256 hex>
+Body:
+{
+  "id": "evt_abc123",                 // unique — dedupe on this (we may retry)
+  "event": "poster.completed",
+  "created_at": "2026-07-04T12:00:00Z",
+  "data": {
+    "job_id": "...", "org_id": "team-alpha", "tournament_id": "spring-2026",
+    "status": "completed", "storage_key": "...", "signed_url": "https://...",
+    "caption": "..."
+  }
+}
+```
+
+### Verify every request (important)
+
+Compute `HMAC-SHA256(secret, "<t>.<raw_request_body>")` and compare to the `v1`
+value in `X-EPAI-Signature`. Reject if it doesn't match or if `t` is older than
+~5 minutes. Example (Node):
+
+```javascript
+const crypto = require("crypto");
+function verify(rawBody, header, secret) {
+  const { t, v1 } = Object.fromEntries(header.split(",").map(p => p.split("=")));
+  if (Math.abs(Date.now()/1000 - Number(t)) > 300) return false;        // replay guard
+  const expected = crypto.createHmac("sha256", secret)
+                         .update(`${t}.${rawBody}`).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(v1));
+}
+```
+
+Respond with any **2xx** to acknowledge. Non-2xx or a timeout triggers automatic
+retries with exponential backoff (a few attempts over ~minutes), after which the
+delivery is marked failed — visible in `GET /v1/webhook/deliveries` and re-sendable.
+
+> Signed image URLs in `signed_url` expire (~1h). For anything you store long-term, keep the `storage_key` and fetch a fresh link via `GET /v1/posters/{job_id}` or `/download`.
 
 ---
 

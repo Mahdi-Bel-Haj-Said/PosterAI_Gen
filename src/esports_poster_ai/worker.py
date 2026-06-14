@@ -6,8 +6,10 @@ Run with:
     python -m esports_poster_ai.worker            # run forever
     python -m esports_poster_ai.worker --burst     # drain the queue, then exit
 
-It consumes the `poster-ai` queue and runs `jobs.handlers.process_job` for
-each job. `--burst` is handy for tests and cron-style processing.
+It consumes the `poster-ai` queue (running `jobs.handlers.process_job`) and the
+`epai-webhooks` queue (running `webhooks.delivery.deliver_webhook`). The webhook
+queue stays empty unless WEBHOOKS_ENABLED is on and a platform has a config, so
+this is a no-op for the default setup. `--burst` is handy for tests.
 
 `SimpleWorker` is used (not the default forking `Worker`): it runs jobs in the
 worker process itself, which works on Windows — the default worker relies on
@@ -43,11 +45,18 @@ def main(argv: list[str] | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    connection = get_redis(settings)
-    queue = Queue(QUEUE_NAME, connection=connection)
+    from esports_poster_ai.webhooks.delivery import WEBHOOK_QUEUE
 
-    logger.info("worker.start", extra={"queue": QUEUE_NAME, "burst": args.burst})
-    SimpleWorker([queue], connection=connection).work(burst=args.burst)
+    connection = get_redis(settings)
+    # Posters first (higher priority), then webhook deliveries. The webhook queue
+    # is empty unless webhooks are enabled + configured, so this adds no overhead.
+    queues = [Queue(QUEUE_NAME, connection=connection), Queue(WEBHOOK_QUEUE, connection=connection)]
+
+    logger.info(
+        "worker.start",
+        extra={"queues": [QUEUE_NAME, WEBHOOK_QUEUE], "burst": args.burst},
+    )
+    SimpleWorker(queues, connection=connection).work(burst=args.burst)
 
 
 if __name__ == "__main__":
