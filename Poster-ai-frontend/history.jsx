@@ -62,10 +62,16 @@ function HistoryCard({ job, navigate }) {
   );
 }
 
+// Module-level cache survives navigation (same pattern as the dashboard): a
+// return to History renders instantly from the last data while it refreshes in
+// the background. Reuses _mergeStableUrl / _keepImages from dashboard.jsx so
+// thumbnails keep their cached image instead of re-downloading.
+const _histCache = {}; // orgId -> jobs[]
+
 function History({ navigate }) {
   const orgId = (window.api && window.api.orgId) || "1";
-  const [jobs, setJobs] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
+  const [jobs, setJobs] = React.useState(() => _histCache[orgId] || []);
+  const [loading, setLoading] = React.useState(() => _histCache[orgId] == null);
   const [error, setError] = React.useState(null);
   const [statusFilter, setStatusFilter] = React.useState("all");
   const [tournamentFilter, setTournamentFilter] = React.useState("all");
@@ -74,7 +80,10 @@ function History({ navigate }) {
   const fetchJobs = React.useCallback(async () => {
     try {
       const data = await window.api.listPosters({ orgId, limit: 200 });
-      setJobs(data.jobs || []);
+      const merged = _mergeStableUrl(_histCache[orgId], data.jobs || [], "signed_url");
+      _histCache[orgId] = merged;
+      _keepImages(merged, "signed_url");
+      setJobs(merged);
       setError(null);
     } catch (e) {
       setError(e.message);

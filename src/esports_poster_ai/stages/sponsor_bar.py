@@ -20,6 +20,8 @@ from typing import List, Tuple
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageStat
 
+from esports_poster_ai.sponsors_layout import reserved_height_px
+
 logger = logging.getLogger(__name__)
 
 
@@ -311,11 +313,12 @@ def detect_bar_config(poster: Image.Image, logos: List[Image.Image]) -> dict:
     bottom_region = poster.crop((0, h - region_h, w, h))
     position = "bottom"
 
-    max_logo_h = max((img.height for img in logos), default=0)
-    padding_y = max(12, int(max_logo_h * 0.35))
-    bar_height = max_logo_h + (padding_y * 2)
-    bar_height = max(56, min(int(bar_height), 88))
-    padding_y = max(8, min(padding_y, int(bar_height * 0.2)))
+    # Bar height = the reserved fraction the prompt told the model to clear
+    # (orientation-based: landscape 5% / square 8% / portrait 10%). Logos scale
+    # to fit inside it. This pins the bar to the exact strip the image model
+    # left empty, so the two always line up. See sponsors_layout.py.
+    bar_height = reserved_height_px(w, h)
+    padding_y = max(8, int(bar_height * 0.22))
 
     winning_region = bottom_region
     bg_color_hex = _sample_and_darken(winning_region, darken_factor=0.30)

@@ -205,6 +205,7 @@ def run_fresh(
     )
 
     output_format = (input_data.get("_meta") or {}).get("output_format") or "portrait_1080x1920"
+    quality = (input_data.get("_meta") or {}).get("quality") or "medium"
     input_images = _extract_input_images(input_data, project_root)
 
     _emit("generating_poster")
@@ -213,6 +214,7 @@ def run_fresh(
         prompt=prompt,
         input_images=input_images,
         output_format=output_format,
+        quality=quality,
         client=api,
         settings=s,
         run_id=run_id,

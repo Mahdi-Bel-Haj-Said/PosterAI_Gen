@@ -105,6 +105,11 @@ class ApiKeyStore:
         doc = self._col.find_one({"_id": key_id})
         return _from_doc(doc) if doc else None
 
+    def list_all(self, *, include_revoked: bool = True, limit: int = 1000) -> List[ApiKey]:
+        """Every API key across platforms — used by the provider Clients view."""
+        query: Dict[str, Any] = {} if include_revoked else {"revoked": False}
+        return [_from_doc(d) for d in self._col.find(query).limit(limit)]
+
     def list_for_platform(
         self, platform_id: str, *, include_revoked: bool = False, limit: int = 100
     ) -> List[ApiKey]:

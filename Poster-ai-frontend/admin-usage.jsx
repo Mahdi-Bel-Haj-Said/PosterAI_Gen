@@ -37,15 +37,15 @@ function _fmtRelative(iso) {
 
 // CSS color variable per tier — matches the badge accents we want.
 const _TIER_COLOR = {
-  free:       "var(--fg-3)",
-  pro:        "var(--cy)",
-  enterprise: "var(--crim)",
+  free:   "var(--fg-3)",
+  pro:    "var(--cy)",
+  kratos: "var(--crim)",
 };
 
 const _TIER_SOFT = {
-  free:       "var(--surface-2)",
-  pro:        "var(--cy-soft, rgba(45,212,255,0.12))",
-  enterprise: "var(--crim-soft)",
+  free:   "var(--surface-2)",
+  pro:    "var(--cy-soft, rgba(45,212,255,0.12))",
+  kratos: "var(--crim-soft)",
 };
 
 function TierBadge({ tier, tiers }) {
@@ -176,10 +176,12 @@ function AdminUsage() {
       </div>
 
       {/* Global totals */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 14, marginBottom: 18 }}>
         <StatCard label="ORGS" value={_INT.format(totals?.total_orgs || 0)} hint={
-          <span>{by_tier?.free || 0} free · {by_tier?.pro || 0} pro · {by_tier?.enterprise || 0} enterprise</span>
+          <span>{by_tier?.free || 0} free · {by_tier?.pro || 0} pro · {by_tier?.kratos || 0} kratos</span>
         } />
+        <StatCard label="RED COINS" value={_INT.format(totals?.total_coins_balance || 0)}
+                  hint={<span className="hint">{_INT.format(totals?.total_coins_used || 0)} used · across all orgs</span>} />
         <StatCard label="POSTERS COMPLETED" value={_INT.format(totals?.total_completed_posters || 0)}
                   hint={<span style={{ color: "var(--ok, #34c759)" }}>{_INT.format(totals?.total_completed_30d || 0)} in last 30 days</span>} />
         <StatCard label="EST. SPEND" value={_USD.format(totals?.total_estimated_spend_usd || 0)}
@@ -192,7 +194,7 @@ function AdminUsage() {
       <div className="card" style={{ padding: 14, marginBottom: 18 }}>
         <div className="eyebrow" style={{ marginBottom: 8 }}>Subscription tiers</div>
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          {(["free","pro","enterprise"]).map((t) => {
+          {(["free","pro","kratos"]).map((t) => {
             const info = tiers?.[t] || {};
             const count = by_tier?.[t] || 0;
             return (
@@ -237,12 +239,14 @@ function AdminUsage() {
                 <Th>Mode mix</Th>
                 <Th onClick={() => toggleSort("tier_utilization_pct")} active={sortKey==="tier_utilization_pct"} numeric>Tier use</Th>
                 <Th onClick={() => toggleSort("estimated_spend_total_usd")} active={sortKey==="estimated_spend_total_usd"} numeric>Spend</Th>
+                <Th onClick={() => toggleSort("coins_balance")} active={sortKey==="coins_balance"} numeric>RC bal</Th>
+                <Th onClick={() => toggleSort("coins_used")} active={sortKey==="coins_used"} numeric>RC used</Th>
                 <Th onClick={() => toggleSort("last_activity_at")} active={sortKey==="last_activity_at"}>Last seen</Th>
               </tr>
             </thead>
             <tbody>
               {sortedOrgs.length === 0 && (
-                <tr><td colSpan={13} style={{ padding: 24, textAlign: "center", color: "var(--fg-3)" }}>No orgs yet — generate a poster to seed.</td></tr>
+                <tr><td colSpan={15} style={{ padding: 24, textAlign: "center", color: "var(--fg-3)" }}>No orgs yet — generate a poster to seed.</td></tr>
               )}
               {sortedOrgs.map((o) => {
                 const completed = o.completed || 0;
@@ -279,6 +283,13 @@ function AdminUsage() {
                       </div>
                     </Td>
                     <Td numeric>{_USD.format(o.estimated_spend_total_usd || 0)}</Td>
+                    <Td numeric>
+                      <span className="mono" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--crim)" }} />
+                        {_INT.format(o.coins_balance || 0)}
+                      </span>
+                    </Td>
+                    <Td numeric><span className="mono" style={{ color: "var(--fg-3)" }}>{_INT.format(o.coins_used || 0)}</span></Td>
                     <Td><span className="mono" style={{ fontSize: 10.5, color: "var(--fg-3)" }}>{_fmtRelative(o.last_activity_at)}</span></Td>
                   </tr>
                 );

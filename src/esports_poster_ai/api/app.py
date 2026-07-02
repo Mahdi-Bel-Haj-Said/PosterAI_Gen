@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from esports_poster_ai.api.routes.api_keys import router as api_keys_router
 from esports_poster_ai.api.routes.assets import router as assets_router
+from esports_poster_ai.api.routes.coins import router as coins_router
 from esports_poster_ai.api.routes.backgrounds import router as backgrounds_router
 from esports_poster_ai.api.routes.me import router as me_router
 from esports_poster_ai.api.routes.orgs import router as orgs_router
@@ -57,6 +58,7 @@ app.include_router(me_router)
 app.include_router(orgs_router)
 app.include_router(backgrounds_router)
 app.include_router(webhooks_router)
+app.include_router(coins_router)
 
 
 def _mongodb_ok() -> bool:

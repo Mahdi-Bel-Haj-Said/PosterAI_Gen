@@ -36,6 +36,8 @@ function JobProgress({ navigate, jobId }) {
         if (cancelled) return;
         setJob(j);
         if (j.status === "completed") {
+          // The submitted job succeeded — the wizard draft is no longer needed.
+          if (window.clearWizardDraft) window.clearWizardDraft();
           setTimeout(() => navigate(`#/result/${jobId}`), 600);
           return;
         }
@@ -146,12 +148,30 @@ function JobProgress({ navigate, jobId }) {
           )}
 
           <div className="row" style={{ gap: 10 }}>
-            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => navigate("#/")}>
-              <Icon name="home" size={14} /> Back to dashboard
-            </button>
-            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => navigate("#/create")}>
-              <Icon name="plus" size={14} /> Start another
-            </button>
+            {status === "failed" ? (
+              <>
+                {/* Reopen the wizard at the background step with all inputs still
+                    filled in, so the user just swaps the background and retries. */}
+                <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => {
+                  if (window.setWizardDraftStep) window.setWizardDraftStep(window.WIZARD_BACKGROUND_STEP || 4);
+                  navigate("#/create");
+                }}>
+                  <Icon name="image" size={14} /> Change background &amp; retry
+                </button>
+                <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => navigate("#/")}>
+                  <Icon name="home" size={14} /> Back to dashboard
+                </button>
+              </>
+            ) : (
+              <>
+                <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => navigate("#/")}>
+                  <Icon name="home" size={14} /> Back to dashboard
+                </button>
+                <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => navigate("#/create")}>
+                  <Icon name="plus" size={14} /> Start another
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

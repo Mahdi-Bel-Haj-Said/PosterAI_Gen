@@ -310,6 +310,84 @@ def build_image_factual_footer(input_data: Dict[str, Any]) -> str:
     )
 
 
+_IMAGE_STYLE_RULES = """\
+STYLE RULES — apply to the WHOLE poster; override the source background's own
+colors and mood wherever they conflict with the directives above:
+- Color-grade the ENTIRE frame toward the dominant color above — not only the
+  accents, glow, or text. Re-tint the background, lighting, and atmosphere so
+  that hue clearly dominates the finished poster.
+- Treat the vibe and energy above as the overall mood and composition density
+  of the poster, not a minor accent.
+- These are deliberate creative directions from the user. Do NOT fall back to
+  the source background's original palette or mood because it looks safer."""
+
+
+def _style_directive_lines(
+    input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]] = None
+) -> List[str]:
+    """Verbatim style directives for the image footer.
+
+    Consistency mode (a Style DNA is present) speaks in palette + lighting +
+    atmosphere; fresh mode speaks in the user's design vibe / color / energy.
+    Mirrors the precedence the assembler uses for the in-prompt style block.
+    """
+    if isinstance(style_dna, dict) and style_dna:
+        lines: List[str] = []
+        palette = style_dna.get("palette")
+        if isinstance(palette, list):
+            hexes = ", ".join(c for c in palette if _is_non_empty_str(c))
+            if hexes:
+                lines.append(
+                    f"- Dominant palette (use these as the poster's primary colors): {hexes}"
+                )
+        for label, key in (("Lighting", "lighting"), ("Atmosphere", "atmosphere"), ("Energy", "energy")):
+            if _is_non_empty_str(style_dna.get(key)):
+                lines.append(f"- {label}: {style_dna.get(key)}")
+        return lines
+
+    design = input_data.get("design") if isinstance(input_data, dict) else None
+    if not isinstance(design, dict):
+        return []
+    lines = []
+    if _is_non_empty_str(design.get("vibe")):
+        lines.append(f"- Vibe: {design.get('vibe')}")
+    if _is_non_empty_str(design.get("primary_color")):
+        lines.append(
+            f"- Dominant color (make this the primary color of the WHOLE poster): "
+            f"{design.get('primary_color')}"
+        )
+    if _is_non_empty_str(design.get("energy")):
+        lines.append(f"- Energy: {design.get('energy')}")
+    return lines
+
+
+def build_image_style_footer(
+    input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]] = None
+) -> str:
+    """
+    Hard visual-style block appended DIRECTLY to the prompt the image model
+    receives — the style counterpart to `build_image_factual_footer`.
+
+    The user's design direction (dominant color, vibe, energy) only reaches
+    gpt-image-2 through GPT-4o's rewrite, which — looking at the real source
+    background — tends to describe the colors it sees and soften the requested
+    ones. Re-stating the directives verbatim here bypasses that dilution and
+    explicitly tells the edit pass to color-grade the whole frame, instead of
+    leaving the dominant color as a mere accent on the original background.
+
+    Returns an empty string when no style directives apply.
+    """
+    lines = _style_directive_lines(input_data, style_dna)
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    return (
+        "=== VISUAL STYLE — APPLY ACROSS THE WHOLE POSTER ===\n\n"
+        f"{body}\n\n"
+        f"{_IMAGE_STYLE_RULES}"
+    )
+
+
 def build_prompt(input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]] = None) -> str:
     """
     Assemble the final prompt string in fixed order:

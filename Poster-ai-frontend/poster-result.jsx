@@ -6,6 +6,8 @@ function PosterResult({ navigate, jobId }) {
   const [error, setError] = React.useState(null);
   const [copied, setCopied] = React.useState(false);
   const [dnaState, setDnaState] = React.useState({ busy: false, status: null, error: null });
+  // Full-screen lightbox for the poster.
+  const [zoom, setZoom] = React.useState(false);
 
   // Caption state — fetched (and persisted) lazily once the job is completed.
   // null = not loaded yet / unavailable; string = ready to use.
@@ -59,6 +61,19 @@ function PosterResult({ navigate, jobId }) {
     })();
     return () => { cancelled = true; };
   }, [job, caption]);
+
+  // Close the lightbox on Escape + lock background scroll while it's open.
+  React.useEffect(() => {
+    if (!zoom) return;
+    const onKey = (e) => { if (e.key === "Escape") setZoom(false); };
+    window.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [zoom]);
 
   const regenerateCaption = async () => {
     if (!job?.job_id) return;
@@ -183,21 +198,47 @@ function PosterResult({ navigate, jobId }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 28 }}>
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <div style={{
+        {/* align-items:flex-start so the frame hugs the poster's height instead
+            of stretching to match the (taller) controls column. The frame is
+            sized to the image (fit-content): a landscape poster uses the full
+            column width, a tall portrait is bounded by the viewport height so
+            it never overflows — the box always follows the poster's shape. */}
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "flex-start" }}>
+          <div className="poster-frame" style={{
             position: "relative",
-            width: "min(100%, 540px)",
-            boxShadow: "0 30px 100px -30px oklch(65% 0.230 8 / 0.5), 0 0 0 1px var(--line)",
+            width: "fit-content",
+            maxWidth: "100%",
             borderRadius: 14,
             overflow: "hidden",
             animation: "reveal 1s ease-out",
             background: "var(--surface-2)",
+            lineHeight: 0,
           }}>
             {job.signed_url ? (
-              <img src={job.signed_url} alt="Generated poster"
-                   style={{ display: "block", width: "100%", height: "auto" }} />
+              <React.Fragment>
+                <img src={job.signed_url} alt="Generated poster"
+                     onClick={() => setZoom(true)}
+                     title="Click to view full screen"
+                     style={{
+                       display: "block",
+                       width: "auto",
+                       height: "auto",
+                       maxWidth: "100%",
+                       maxHeight: "calc(100vh - 150px)",
+                       cursor: "zoom-in",
+                     }} />
+                <button
+                  type="button"
+                  className="poster-expand"
+                  onClick={() => setZoom(true)}
+                  title="View full screen"
+                  aria-label="View poster full screen"
+                >
+                  <Icon name="expand" size={13} /> Full screen
+                </button>
+              </React.Fragment>
             ) : (
-              <div style={{ padding: 40, textAlign: "center", color: "var(--fg-3)" }}>No image URL returned.</div>
+              <div style={{ padding: 40, textAlign: "center", color: "var(--fg-3)", width: 360 }}>No image URL returned.</div>
             )}
           </div>
         </div>
@@ -387,11 +428,77 @@ function PosterResult({ navigate, jobId }) {
         />
       )}
 
+      {zoom && job.signed_url && (
+        <div
+          className="poster-lightbox"
+          onClick={(e) => { if (e.target === e.currentTarget) setZoom(false); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1100,
+            background: "rgba(6,6,8,0.88)", backdropFilter: "blur(10px)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 28, cursor: "zoom-out",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setZoom(false)}
+            className="btn btn-ghost"
+            style={{ position: "absolute", top: 18, right: 18, padding: "6px 8px", zIndex: 1 }}
+            title="Close (Esc)"
+            aria-label="Close full screen"
+          >
+            <Icon name="cross" size={14} />
+          </button>
+          <img
+            src={job.signed_url}
+            alt="Generated poster — full screen"
+            onClick={() => setZoom(false)}
+            style={{
+              maxWidth: "96vw", maxHeight: "92vh",
+              width: "auto", height: "auto",
+              display: "block", borderRadius: 10, cursor: "zoom-out",
+              boxShadow: "0 40px 140px -30px rgba(0,0,0,0.85)",
+            }}
+          />
+        </div>
+      )}
+
       <style>{`
         @keyframes reveal {
           0%   { opacity: 0; transform: translateY(20px) scale(0.96); filter: blur(8px); }
           60%  { filter: blur(0); }
           100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+        }
+        .poster-frame {
+          box-shadow: 0 30px 100px -30px oklch(65% 0.230 8 / 0.5), 0 0 0 1px var(--line);
+          transition: transform .4s cubic-bezier(.2,.8,.2,1), box-shadow .4s ease;
+          will-change: transform;
+        }
+        .poster-frame:hover {
+          transform: translateY(-6px) scale(1.015);
+          box-shadow: 0 44px 130px -26px oklch(65% 0.230 8 / 0.62), 0 0 0 1px var(--line-strong);
+        }
+        .poster-expand {
+          position: absolute; top: 10px; right: 10px;
+          display: inline-flex; align-items: center; gap: 6px;
+          padding: 7px 11px; border-radius: 9px;
+          background: rgba(10,10,12,0.55); color: #fff;
+          border: 1px solid rgba(255,255,255,0.18);
+          backdrop-filter: blur(6px);
+          font-family: var(--f-body); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+          line-height: 1; cursor: pointer;
+          opacity: 0; transform: translateY(-4px);
+          transition: opacity .25s ease, transform .25s ease, background .2s ease;
+        }
+        .poster-frame:hover .poster-expand,
+        .poster-expand:focus-visible { opacity: 1; transform: translateY(0); }
+        .poster-expand:hover { background: rgba(22,22,26,0.82); }
+        .poster-lightbox { animation: lightboxBackdropIn .22s ease-out; }
+        .poster-lightbox img { animation: lightboxImgIn .32s cubic-bezier(.2,.8,.2,1); }
+        @keyframes lightboxBackdropIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes lightboxImgIn {
+          0%   { opacity: 0; transform: scale(0.86) translateY(14px); }
+          100% { opacity: 1; transform: scale(1) translateY(0); }
         }
       `}</style>
     </div>

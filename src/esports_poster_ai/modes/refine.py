@@ -109,6 +109,7 @@ def run_refine(
         raise ValueError("refine.user_prompt is required.")
 
     output_format = (input_data.get("_meta") or {}).get("output_format") or "portrait_1080x1920"
+    quality = (input_data.get("_meta") or {}).get("quality") or "medium"
 
     logger.info(
         "refine.start",
@@ -135,6 +136,7 @@ def run_refine(
         prompt=prompt,
         input_images=[],
         output_format=output_format,
+        quality=quality,
         client=api,
         settings=s,
         run_id=run_id,

@@ -116,9 +116,18 @@ class R2Storage:
         from botocore.exceptions import ClientError
 
         try:
+            # Force a Cache-Control header on the response so browsers firmly
+            # cache the image for the URL's lifetime instead of revalidating on
+            # every render (objects are immutable per key, so this is safe and
+            # stops the "poster reloads on navigation" flash). `private` because
+            # the URL is presigned/per-user, not for shared/CDN caches.
             return self._client.generate_presigned_url(
                 "get_object",
-                Params={"Bucket": self._bucket, "Key": key},
+                Params={
+                    "Bucket": self._bucket,
+                    "Key": key,
+                    "ResponseCacheControl": f"private, max-age={expires_in}",
+                },
                 ExpiresIn=expires_in,
             )
         except ClientError as e:

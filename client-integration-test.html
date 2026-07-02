@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>EsportsPostAI — Client Integration Test</title>
+<style>
+  :root { --bg:#0d0f14; --card:#161a22; --line:#262c38; --fg:#e7ecf3; --mut:#8a93a6;
+          --acc:#7B2FFF; --ok:#27c08a; --warn:#e8b53a; --err:#e5484d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--fg); }
+  .wrap { max-width:1040px; margin:0 auto; padding:24px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--mut); margin:0 0 20px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:860px){ .grid{ grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--mut); margin:10px 0 4px; }
+  input, select { width:100%; padding:9px 10px; background:#0f131a; border:1px solid var(--line);
+                  border-radius:8px; color:var(--fg); font:inherit; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  button { cursor:pointer; border:0; border-radius:8px; padding:10px 16px; font:inherit; font-weight:600; color:#fff; }
+  .primary { background:var(--acc); }
+  .ghost { background:#222936; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .btns { display:flex; gap:10px; margin-top:16px; flex-wrap:wrap; }
+  .log { background:#0a0c11; border:1px solid var(--line); border-radius:8px; padding:12px;
+         font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; white-space:pre-wrap;
+         max-height:300px; overflow:auto; margin-top:14px; }
+  .log .ok{color:var(--ok)} .log .err{color:var(--err)} .log .warn{color:var(--warn)} .log .mut{color:var(--mut)}
+  .result { margin-top:18px; text-align:center; }
+  .result img { max-width:100%; border-radius:12px; border:1px solid var(--line); }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .chip { font-size:12px; padding:4px 9px; border-radius:999px; background:#0f131a; border:1px solid var(--line); color:var(--mut); }
+  .note { font-size:12px; color:var(--mut); margin-top:8px; }
+  code { background:#0f131a; padding:1px 5px; border-radius:5px; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>EsportsPostAI — Client Integration Test</h1>
+  <p class="sub">A standalone page that talks to the API exactly like an external platform would — using your API key, registering an org, generating a poster, and polling for the result.</p>
+
+  <div class="grid">
+    <!-- ───────────────────────── connection ───────────────────────── -->
+    <div class="card">
+      <h2>1 · Connection</h2>
+      <label>API base URL</label>
+      <input id="base" value="http://localhost:8000" />
+      <label>API key &nbsp;<span class="note">(epai_… — sent as <code>Authorization: Bearer</code>)</span></label>
+      <input id="key" placeholder="epai_xxxxxxxx…" />
+      <div class="row">
+        <div><label>Org id (your customer)</label><input id="orgId" value="demo-team" /></div>
+        <div><label>Tournament id</label><input id="tid" value="test-cup-2026" /></div>
+      </div>
+      <div class="btns">
+        <button class="ghost" id="btnMe">Check key (/v1/me)</button>
+        <button class="ghost" id="btnReg">Register org</button>
+      </div>
+      <p class="note">Leave the key blank to use dev mode (no auth). With a key, the org must be registered — the Generate button does that for you automatically.</p>
+    </div>
+
+    <!-- ───────────────────────── test data ───────────────────────── -->
+    <div class="card">
+      <h2>2 · Test poster data</h2>
+      <div class="row">
+        <div><label>Game</label>
+          <select id="game">
+            <option value="league_of_legends">League of Legends</option>
+            <option value="valorant">Valorant</option>
+          </select></div>
+        <div><label>Poster type</label>
+          <select id="ptype">
+            <option value="gameday">Gameday</option>
+            <option value="game_results">Game results</option>
+          </select></div>
+      </div>
+      <div class="row">
+        <div><label>Team 1 name</label><input id="t1" value="FNATIC" /></div>
+        <div><label>Team 1 short</label><input id="t1s" value="FNC" /></div>
+      </div>
+      <div class="row">
+        <div><label>Team 2 name</label><input id="t2" value="T1" /></div>
+        <div><label>Team 2 short</label><input id="t2s" value="T1" /></div>
+      </div>
+      <div class="row">
+        <div><label>Tournament name</label><input id="tname" value="Test Cup 2026" /></div>
+        <div><label>Time</label><input id="time" value="17:00" /></div>
+      </div>
+      <div class="row">
+        <div><label>Output format</label>
+          <select id="fmt">
+            <option value="portrait_1080x1920">Portrait 1080×1920</option>
+            <option value="square_1080x1080">Square 1080×1080</option>
+            <option value="landscape_1920x1080">Landscape 1920×1080</option>
+          </select></div>
+        <div><label>Vibe</label>
+          <select id="vibe">
+            <option>cyberpunk</option><option>cinematic</option><option>dark_fantasy</option>
+            <option>cosmic</option><option>minimal</option><option>fire_energy</option>
+          </select></div>
+      </div>
+      <div class="btns">
+        <button class="primary" id="btnGen">⚡ Generate poster</button>
+      </div>
+      <p class="note">No logo uploads needed for this test — it generates from a system background + text. (Real generation costs ~$0.05 and needs OPENAI_API_KEY configured server-side.)</p>
+    </div>
+  </div>
+
+  <!-- ───────────────────────── output ───────────────────────── -->
+  <div class="card" style="margin-top:18px;">
+    <h2>3 · Activity</h2>
+    <div id="chips" class="chips"></div>
+    <div id="log" class="log">Ready. Fill in your key + click Generate.</div>
+    <div id="result" class="result"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const logEl = $("log");
+function log(msg, cls="") { logEl.innerHTML += `\n<span class="${cls}">${msg}</span>`; logEl.scrollTop = logEl.scrollHeight; }
+function clearLog(){ logEl.textContent = ""; $("result").innerHTML = ""; $("chips").innerHTML = ""; }
+
+function cfg() {
+  const base = $("base").value.replace(/\/$/, "");
+  const key  = $("key").value.trim();
+  const headers = { "Content-Type": "application/json" };
+  if (key) headers["Authorization"] = "Bearer " + key;
+  return { base, key, headers };
+}
+
+function showQuota(res) {
+  const c = $("chips"); c.innerHTML = "";
+  for (const w of ["Day","Week","Month"]) {
+    const lim = res.headers.get(`X-RateLimit-Limit-${w}`);
+    const rem = res.headers.get(`X-RateLimit-Remaining-${w}`);
+    if (lim != null) c.innerHTML += `<span class="chip">${w}: ${rem}/${lim} left</span>`;
+  }
+}
+
+async function checkMe() {
+  clearLog(); const { base, headers, key } = cfg();
+  log(`GET ${base}/v1/me …`, "mut");
+  try {
+    const r = await fetch(base + "/v1/me", { headers });
+    const b = await r.json();
+    if (!r.ok) return log(`✖ ${r.status}: ${JSON.stringify(b)}`, "err");
+    log(`✔ authenticated=${b.authenticated}  platform=${b.platform_id}  orgs=${b.org_count}`, "ok");
+    if (!key) log("ℹ no key sent → dev mode (single-tenant).", "warn");
+  } catch (e) { log("✖ " + e + "  — is the API running / CORS ok?", "err"); }
+}
+
+async function registerOrg() {
+  const { base, headers } = cfg();
+  const org_id = $("orgId").value.trim();
+  log(`POST ${base}/v1/orgs  {org_id:"${org_id}"} …`, "mut");
+  const r = await fetch(base + "/v1/orgs", { method:"POST", headers,
+    body: JSON.stringify({ org_id, name: org_id }) });
+  if (r.status === 201) return log(`✔ org "${org_id}" registered.`, "ok");
+  if (r.status === 409) return log(`✔ org "${org_id}" already registered.`, "ok");
+  const b = await r.json().catch(()=> ({}));
+  log(`✖ ${r.status}: ${JSON.stringify(b)}`, "err");
+  throw new Error("register failed");
+}
+
+function buildInput() {
+  const ptype = $("ptype").value;
+  const input = {
+    _meta: { game:$("game").value, poster_type:ptype, mode:"fresh", output_format:$("fmt").value },
+    tournament: { name:$("tname").value, logo_path:null, phase:null },
+    match: {
+      team1: { name:$("t1").value, short_name:$("t1s").value, logo_path:null },
+      team2: { name:$("t2").value, short_name:$("t2s").value, logo_path:null },
+      format: ptype === "game_results" ? "bo5" : null,
+      date: "", time:$("time").value, timezone:"CET",
+    },
+    stream: { platform:"Twitch", url:"twitch.tv/test" },
+    player_feature: { enabled:false, image_path:null },
+    sponsors: { enabled:false, logos:[] },
+    design: { vibe:$("vibe").value, primary_color:"#7B2FFF", energy:"intense" },
+  };
+  if (ptype === "game_results") { input.match.team1.score = 2; input.match.team2.score = 3; }
+  return input;
+}
+
+async function generate() {
+  clearLog(); const { base, headers, key } = cfg();
+  $("btnGen").disabled = true;
+  try {
+    if (key) await registerOrg();   // authenticated → org must exist first
+
+    const body = { org_id:$("orgId").value.trim(), tournament_id:$("tid").value.trim(), input:buildInput() };
+    log(`POST ${base}/v1/posters …`, "mut");
+    const r = await fetch(base + "/v1/posters", { method:"POST", headers, body:JSON.stringify(body) });
+    showQuota(r);
+    const created = await r.json().catch(()=> ({}));
+    if (r.status === 429) return log(`✖ 429 rate limited — ${created.detail?.message || "quota reached"} (Retry-After: ${r.headers.get("Retry-After")}s)`, "warn");
+    if (!r.ok) return log(`✖ ${r.status}: ${JSON.stringify(created)}`, "err");
+    const jobId = created.job_id;
+    log(`✔ queued. job_id=${jobId}`, "ok");
+
+    // poll
+    let tries = 0;
+    while (tries++ < 120) {
+      await new Promise(s => setTimeout(s, 2500));
+      const jr = await fetch(`${base}/v1/posters/${jobId}`, { headers });
+      const job = await jr.json();
+      log(`… status=${job.status}`, "mut");
+      if (job.status === "completed") { log("✔ completed — fetching image", "ok"); return showImage(base, headers, jobId); }
+      if (job.status === "failed")    return log(`✖ generation failed: ${job.error}`, "err");
+    }
+    log("✖ timed out waiting for completion", "err");
+  } catch (e) {
+    log("✖ " + e, "err");
+  } finally { $("btnGen").disabled = false; }
+}
+
+async function showImage(base, headers, jobId) {
+  // Use the download proxy so the image displays regardless of storage backend
+  // (a LocalStorage signed_url is a file:// path the browser can't load).
+  const r = await fetch(`${base}/v1/posters/${jobId}/download`, { headers });
+  if (!r.ok) return log(`✖ could not fetch image (${r.status})`, "err");
+  const url = URL.createObjectURL(await r.blob());
+  $("result").innerHTML = `<img src="${url}" alt="generated poster" />`;
+  log("🖼  poster rendered above.", "ok");
+}
+
+$("btnMe").onclick  = checkMe;
+$("btnReg").onclick = () => { clearLog(); registerOrg().catch(()=>{}); };
+$("btnGen").onclick = generate;
+</script>
+</body>
+</html>

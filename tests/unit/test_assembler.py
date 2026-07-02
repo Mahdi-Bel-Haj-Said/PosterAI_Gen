@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from esports_poster_ai.prompt.assembler import build_image_factual_footer, build_prompt
+from esports_poster_ai.prompt.assembler import (
+    build_image_factual_footer,
+    build_image_style_footer,
+    build_prompt,
+)
 
 
 def _gameday_input(**overrides) -> dict:
@@ -240,6 +244,35 @@ def test_image_factual_footer_carries_verbatim_data_and_rules():
     assert "FACTUAL DATA (verbatim):" in footer
     assert "Series Score: FNATIC 2 — 3 T1" in footer
     assert "INVENT NOTHING" in footer or "Do NOT invent" in footer
+
+
+def test_image_style_footer_carries_design_directives_verbatim():
+    # Fresh mode: the footer re-states the user's design so the dominant color /
+    # vibe / energy bypass GPT-4o's rewrite and reach gpt-image-2 directly.
+    inp = _gameday_input()
+    inp["design"] = {"vibe": "cyberpunk", "primary_color": "#FFD24B", "energy": "explosive"}
+    footer = build_image_style_footer(inp)
+    assert "VISUAL STYLE — APPLY ACROSS THE WHOLE POSTER" in footer
+    assert "#FFD24B" in footer
+    assert "cyberpunk" in footer
+    assert "explosive" in footer
+    # The whole-frame color-grade instruction is the actual fix for the bug.
+    assert "color-grade the ENTIRE frame" in footer.lower() or "ENTIRE frame" in footer
+
+
+def test_image_style_footer_prefers_dna_palette_in_consistency_mode():
+    inp = _gameday_input()
+    dna = {"palette": ["#FF0000", "#220011"], "lighting": "neon", "atmosphere": "smoky"}
+    footer = build_image_style_footer(inp, style_dna=dna)
+    assert "#FF0000" in footer and "#220011" in footer
+    assert "neon" in footer
+    assert "smoky" in footer
+
+
+def test_image_style_footer_empty_when_no_design():
+    inp = _gameday_input()
+    inp.pop("design", None)
+    assert build_image_style_footer(inp) == ""
 
 
 def test_design_block_used_in_consistency_mode_when_no_dna():

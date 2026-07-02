@@ -119,16 +119,60 @@ function InProgressCard({ job, navigate }) {
   );
 }
 
+// Module-level cache survives route changes (the Dashboard component unmounts
+// on navigation, but this module stays loaded). Returning to the dashboard then
+// renders instantly from the last data while a background refresh runs — no
+// spinner, no image flash. Keyed per org.
+const _dashCache = {};
+function _cacheFor(orgId) {
+  if (!_dashCache[orgId]) _dashCache[orgId] = { jobs: null, quotas: null, dnas: null };
+  return _dashCache[orgId];
+}
+
+// Preserve already-known signed URLs across refreshes. The backend returns a
+// fresh presigned URL on every fetch; swapping it changes the <img> src and
+// forces a re-download. Reusing the URL we already rendered keeps the browser's
+// cached image (the URL stays valid for the session).
+function _mergeStableUrl(prevList, nextList, urlField) {
+  const keyOf = (x) => x.job_id || x.tournament_id || x.asset_id;
+  const prevUrl = new Map((prevList || []).map((x) => [keyOf(x), x[urlField]]));
+  return (nextList || []).map((x) => {
+    const u = prevUrl.get(keyOf(x));
+    return (u && x[urlField]) ? Object.assign({}, x, { [urlField]: u }) : x;
+  });
+}
+
+// Hold a live Image() per URL so the decoded bitmap stays in the browser's
+// memory cache for the whole session. When the dashboard remounts after
+// navigation, a new <img> with the same src paints from memory instead of
+// re-fetching over the network — which is the "posters load again" flash.
+const _imgKeep = new Map();
+function _keepImages(list, urlField) {
+  for (const x of list || []) {
+    const url = x[urlField];
+    if (url && !_imgKeep.has(url)) {
+      const im = new Image();
+      im.decoding = "async";
+      im.src = url;
+      _imgKeep.set(url, im);
+    }
+  }
+}
+
 function Dashboard({ navigate }) {
-  const [jobs, setJobs] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
+  const cache = _cacheFor((window.api && window.api.orgId) || "1");
+  const [jobs, setJobs] = React.useState(() => cache.jobs || []);
+  const [loading, setLoading] = React.useState(() => cache.jobs == null);
   const [error, setError] = React.useState(null);
   const orgId = (window.api && window.api.orgId) || "1";
 
   const fetchJobs = React.useCallback(async () => {
     try {
       const data = await window.api.listPosters({ orgId, limit: 24 });
-      setJobs(data.jobs || []);
+      const merged = _mergeStableUrl(cache.jobs, data.jobs || [], "signed_url");
+      cache.jobs = merged;
+      _keepImages(merged, "signed_url");
+      setJobs(merged);
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -144,39 +188,50 @@ function Dashboard({ navigate }) {
   }, [fetchJobs]);
 
   // ---- Rate-limit quota (rolling 24h / 7d / 30d).
-  const [quotas, setQuotas] = React.useState([]);
+  const [quotas, setQuotas] = React.useState(() => cache.quotas || []);
   React.useEffect(() => {
     let cancelled = false;
     const tick = () => window.api.getQuota({ orgId })
-      .then((q) => { if (!cancelled) setQuotas(Array.isArray(q) ? q : []); })
+      .then((q) => { if (!cancelled) { const arr = Array.isArray(q) ? q : []; cache.quotas = arr; setQuotas(arr); } })
       .catch(() => { /* non-fatal */ });
     tick();
     const t = setInterval(tick, 10000);
     return () => { cancelled = true; clearInterval(t); };
   }, [orgId, jobs.length]);   // refresh after a new job lands
 
-  // ---- Style DNA library: discover saved DNAs from the org's tournaments.
-  const [dnas, setDnas] = React.useState([]);
-  const tournamentIds = React.useMemo(
-    () => Array.from(new Set(jobs.map((j) => j.tournament_id).filter((t) => t && t !== "_standalone"))).sort(),
-    [jobs]
-  );
-  // Re-run only when the SET of tournament ids changes (not every 5s poll).
-  const tidKey = tournamentIds.join(",");
+  // ---- Style DNA library. One bulk call (GET /v1/style-dnas) instead of a
+  // per-tournament request loop — the old version fired N sequential requests
+  // (each with its own CORS preflight), which is what made this section crawl.
+  const [dnas, setDnas] = React.useState(() => cache.dnas || []);
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
-      const found = [];
-      for (const tid of tournamentIds) {
-        try {
-          const dna = await window.api.getStyleDna({ orgId, tournamentId: tid });
-          if (dna) found.push(dna);
-        } catch (_) { /* skip */ }
-      }
-      if (!cancelled) setDnas(found);
+      try {
+        const res = await window.api.listStyleDnas({ orgId });
+        if (cancelled) return;
+        const found = (res && res.style_dnas) || [];
+        const merged = _mergeStableUrl(cache.dnas, found, "source_poster_url");
+        cache.dnas = merged;
+        _keepImages(merged, "source_poster_url");
+        setDnas(merged);
+      } catch (_) { /* non-fatal */ }
     })();
     return () => { cancelled = true; };
-  }, [tidKey, orgId]);
+  }, [orgId]);
+
+  // ---- Red Coins balance (users see tokens, never dollars).
+  const [coins, setCoins] = React.useState(() => cache.coins || null);
+  React.useEffect(() => {
+    let cancelled = false;
+    const tick = () => window.api.getCoins({ orgId })
+      .then((c) => { if (!cancelled && c) { cache.coins = c; setCoins(c); } })
+      .catch(() => { /* non-fatal */ });
+    tick();
+    const onChange = () => tick();
+    window.addEventListener("epai:coins-changed", onChange);
+    const t = setInterval(tick, 15000);
+    return () => { cancelled = true; clearInterval(t); window.removeEventListener("epai:coins-changed", onChange); };
+  }, [orgId]);
 
   const inProgress = jobs.filter((j) => ACTIVE_STATUSES.has(j.status));
   const completed = jobs.filter((j) => j.status === "completed").slice(0, 8);
@@ -186,12 +241,12 @@ function Dashboard({ navigate }) {
   const successRate = totalCount > 0
     ? ((completedCount / Math.max(1, completedCount + failedCount)) * 100).toFixed(1) + "%"
     : "—";
-  const estSpend = (completedCount * 0.054).toFixed(2);
+  const coinsLabel = coins ? `${coins.tier} tier` : "balance";
 
   const stats = [
     { label: "Posters total",       value: String(totalCount),       delta: `${completedCount} done`, positive: true },
     { label: "Success rate",        value: successRate,              delta: `${failedCount} failed`,  positive: failedCount === 0 },
-    { label: "Est. spend",          value: `$${estSpend}`,           delta: "$0.05 avg",              positive: null },
+    { label: coinName(),            value: coins ? coins.balance.toLocaleString() : "—", delta: coinsLabel, positive: null },
     { label: "In progress",         value: String(inProgress.length),delta: inProgress.length ? "LIVE" : "idle", positive: inProgress.length > 0 },
   ];
 

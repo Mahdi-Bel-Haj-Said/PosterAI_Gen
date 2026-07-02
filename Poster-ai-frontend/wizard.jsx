@@ -43,6 +43,17 @@ const FORMATS = [
   { id: "landscape_1920x1080", name: "Landscape", ratio: "16:9", dims: "1920×1080", use: "Banner · Twitter hdr", w: 140, h: 78 },
 ];
 
+// Render-quality tiers for gpt-image-2. `mult` is the cost relative to medium,
+// applied to the image-generation portion of the estimate. The ratios follow
+// OpenAI's image-model quality tiers (token-based): low ≈ 0.25×, high ≈ 4×
+// medium. Change these in one place if your gpt-image-2 billing differs.
+const QUALITY = [
+  { id: "low",    name: "Low",    mult: 0.25, blurb: "Fastest & cheapest — quick drafts and tests." },
+  { id: "medium", name: "Medium", mult: 1.0,  blurb: "Balanced detail and cost.", recommended: true },
+  { id: "high",   name: "High",   mult: 4.0,  blurb: "Sharpest detail — best for finals / print." },
+];
+const QUALITY_MULT = QUALITY.reduce((m, q) => ((m[q.id] = q.mult), m), {});
+
 const COLOR_PRESETS = ["#E83A57", "#3AC0E8", "#FFD24B", "#7B5CFF", "#22C58A", "#FF6A1F"];
 
 const PRESET_TEAMS = [
@@ -123,7 +134,7 @@ const COST = {
   consistency: 0.002,      // Style DNA hard-constraint block (longer prompt)
   vibe: { minimal: -0.005, cyberpunk: 0.002, cosmic: 0.002, dark_fantasy: 0.003, fire_energy: 0.005 },
   energy: { chill: -0.003, balanced: 0, intense: 0.003, explosive: 0.005 },
-  floor: 0.030,            // a run never costs less than this
+  floor: 0.010,            // a run never costs less than this
 };
 
 function estimateCost(form) {
@@ -131,12 +142,18 @@ function estimateCost(form) {
   const add = (label, amount) => items.push({ label, amount });
   const pt = form.poster_type;
 
+  // Render quality scales the image-generation output-token cost only. The
+  // prompt stage and reference-image input tokens are unaffected.
+  const q = form.quality || "medium";
+  const qmult = QUALITY_MULT[q] != null ? QUALITY_MULT[q] : 1.0;
+  const qlabel = q.charAt(0).toUpperCase() + q.slice(1);
+
   add("Prompt analysis (GPT-4o)", COST.promptBase);
-  add("Poster generation (gpt-image-2)", COST.imageBase);
+  add(`Poster generation (gpt-image-2 · ${qlabel} ×${qmult})`, COST.imageBase * qmult);
 
   if (form.format_id !== "square_1080x1080") {
     const fmt = FORMATS.find((f) => f.id === form.format_id);
-    add(`Large canvas (${fmt ? fmt.dims : form.format_id})`, COST.formatLarge);
+    add(`Large canvas (${fmt ? fmt.dims : form.format_id})`, COST.formatLarge * qmult);
   }
 
   // --- reference images (each adds model input tokens)
@@ -191,10 +208,26 @@ function eur(n) {
   return "€" + n.toFixed(3);
 }
 
-// Derive a clean team token from an asset's name/filename:
-// "GNG_LOGO.png" -> "GNG", "JSK LOGO" -> "JSK", "Team Vitality.png" -> "VITALITY"
-const _LOGO_NOISE = /^(logo|logos|team|esports|official|png|jpg|jpeg|webp)$/i;
+// Users are billed in Red Coins, never dollars. `rc()` converts an internal
+// USD cost into the displayed token amount (tokensForUsd + fmtCoins are global,
+// defined in api.jsx). A signed token delta is used for the itemised lines.
+function rc(usd) {
+  return fmtCoins(tokensForUsd(usd)) + " " + coinSym();
+}
+function rcDelta(usd) {
+  if (usd === 0) return "free";
+  const tokens = tokensForUsd(Math.abs(usd));
+  return (usd < 0 ? "−" : "+") + fmtCoins(tokens) + " " + coinSym();
+}
+
+// Derive a clean team token from an asset. Prefer the explicit `team` tag when
+// the asset carries one; otherwise clean the name/filename by dropping common
+// noise words (file types, "logo", "svg", "organization", …):
+//   "GNG_LOGO.png" -> "GNG", "T1 SVG" -> "T1",
+//   "organization fnatic svg" -> "FNATIC", "Team Vitality.png" -> "VITALITY"
+const _LOGO_NOISE = /^(logo|logos|team|esports?|official|organization|org|gaming|club|svg|png|jpg|jpeg|webp|vector|icon|transparent|hd|final|copy)$/i;
 function teamKeyFromAsset(a) {
+  if (a && typeof a.team === "string" && a.team.trim()) return a.team.trim().toUpperCase();
   const base = (a.name || a.filename || "").replace(/\.[a-z0-9]+$/i, "");
   const tokens = base.split(/[^a-z0-9]+/i).filter(Boolean).filter((t) => !_LOGO_NOISE.test(t));
   return tokens.join(" ").toUpperCase().trim();
@@ -208,6 +241,34 @@ function buildTeamLogoLibrary(assets) {
     const key = teamKeyFromAsset(a);
     if (!key) continue;
     if (!seen.has(key)) seen.set(key, { key, short: key.split(" ")[0].slice(0, 4), asset: a });
+  }
+  return Array.from(seen.values());
+}
+
+// Identity for a sponsor logo, used for dedup + quick-pick selection state.
+// Same sponsor name (case-insensitive, extension stripped) = same sponsor, even
+// if re-uploaded under a new storage key. Falls back to the storage key / id.
+function sponsorKeyOf(a) {
+  if (!a) return "";
+  const n = (a.name || "").trim().toLowerCase().replace(/\.(png|jpe?g|webp)$/i, "");
+  return n || a.storage_key || a.asset_id || "";
+}
+
+// Short display label for a sponsor chip.
+function sponsorLabel(a) {
+  const n = (a && a.name ? a.name : "").trim().replace(/\.(png|jpe?g|webp)$/i, "");
+  if (!n) return "logo";
+  return n.length > 14 ? n.slice(0, 13) + "…" : n;
+}
+
+// Collapse a sponsor-logo asset list into one chip per sponsor (most-recent
+// wins). The API returns assets newest-first, so the first per key is kept.
+function buildSponsorLibrary(assets) {
+  const seen = new Map();
+  for (const a of assets || []) {
+    const key = sponsorKeyOf(a);
+    if (!key) continue;
+    if (!seen.has(key)) seen.set(key, a);
   }
   return Array.from(seen.values());
 }
@@ -285,6 +346,7 @@ function defaultForm() {
 
     // format + extras
     format_id: "portrait_1080x1920",
+    quality: "medium",
     featured_player: false,
     featured_player_asset: null,
     sponsor_bar: false,
@@ -296,6 +358,8 @@ function defaultForm() {
 
     // brand library — team logos already uploaded for this org (quick-pick)
     team_logo_library: [],
+    // brand library — sponsor logos already uploaded for this org (quick-pick)
+    sponsor_library: [],
   };
 }
 
@@ -306,7 +370,7 @@ function defaultForm() {
 const WIZARD_DRAFT_KEY = "epai_wizard_draft_v1";
 
 // Fetched/transient fields — not persisted (re-derived on load).
-const _EPHEMERAL_FIELDS = ["style_dna", "style_dna_status", "style_dna_loading", "team_logo_library"];
+const _EPHEMERAL_FIELDS = ["style_dna", "style_dna_status", "style_dna_loading", "team_logo_library", "sponsor_library"];
 
 function loadWizardDraft() {
   try {
@@ -328,6 +392,22 @@ function saveWizardDraft(form, step) {
 function clearWizardDraft() {
   try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch (_) {}
 }
+
+// Re-point the saved draft at a given step (used by "Change background & retry"
+// on a failed job, so reopening the wizard lands on the background step with
+// all the previously-entered inputs intact). No-op if there's no draft.
+function setWizardDraftStep(step) {
+  try {
+    const raw = localStorage.getItem(WIZARD_DRAFT_KEY);
+    if (!raw) return;
+    const d = JSON.parse(raw);
+    d.step = step;
+    localStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify(d));
+  } catch (_) { /* non-fatal */ }
+}
+
+// Step that holds the background source picker (Step 4: Format & extras).
+const WIZARD_BACKGROUND_STEP = 4;
 
 /* ============================================================
    Input JSON builder — maps form state → backend PosterInput.
@@ -360,7 +440,7 @@ function buildInputJSON(form) {
     background = { source: "generated" };
   }
 
-  const _meta = { game, poster_type, mode, output_format };
+  const _meta = { game, poster_type, mode, output_format, quality: form.quality || "medium" };
 
   const teamPayload = (t, withScore, score) => {
     const o = {
@@ -1102,6 +1182,12 @@ function TeamBlock({ side, form, team, onChange }) {
 /* ───── Step 3: Visual style ───── */
 function Step3({ form, set }) {
   const fresh = form.style_mode === "fresh";
+  // If the client disabled consistency, never leave the form stuck on it.
+  React.useEffect(() => {
+    if (!features().consistency && form.style_mode === "consistency") {
+      set({ style_mode: "fresh", tournament_id: "", style_dna: null, style_dna_status: null });
+    }
+  }, [form.style_mode]);
 
   // In consistency mode, look up the Style DNA for the tournament the user
   // actually typed (matched by its slug). Only that tournament's style shows.
@@ -1139,7 +1225,7 @@ function Step3({ form, set }) {
         {[
           { id: "fresh", label: "Fresh look", desc: "Define a new look for this poster" },
           { id: "consistency", label: "Match my previous posters", desc: "Use the tournament's approved Style DNA" },
-        ].map((m) => {
+        ].filter((m) => m.id !== "consistency" || features().consistency).map((m) => {
           const on = form.style_mode === m.id;
           return (
             <button key={m.id} onClick={() => set(m.id === "fresh"
@@ -1353,17 +1439,61 @@ function DNAField({ label, value, children }) {
 /* ───── Step 4: Format + extras ───── */
 function Step4({ form, set }) {
   const canFeaturePlayer = ["gameday","game_results"].includes(form.poster_type);
-  const addSponsor = async (file) => {
-    if (!file) return;
-    try {
-      const a = await window.api.uploadAsset({ orgId: form.org_id, assetType: "sponsor-logos", file, name: file.name });
+  const [newSponsorName, setNewSponsorName] = React.useState("");
+  // Feature flags configured by the client (which qualities/features orgs get).
+  const feats = features();
+  const allowedQ = feats.allowed_qualities || ["low", "medium", "high"];
+  // If the chosen quality isn't offered on this plan, snap to the first allowed.
+  React.useEffect(() => {
+    if (!allowedQ.includes(form.quality)) set({ quality: allowedQ[0] || "medium" });
+  }, [form.quality]);
+
+  // Is this sponsor name already on the poster or in the brand library?
+  const sponsorNameTaken = (name) => {
+    const k = sponsorKeyOf({ name });
+    return form.sponsor_assets.some((s) => sponsorKeyOf(s) === k)
+        || (form.sponsor_library || []).some((s) => sponsorKeyOf(s) === k);
+  };
+
+  // Add/remove a library sponsor from the poster (dedup by sponsor identity).
+  const toggleSponsor = (a) => {
+    const k = sponsorKeyOf(a);
+    if (form.sponsor_assets.some((s) => sponsorKeyOf(s) === k)) {
+      set({ sponsor_assets: form.sponsor_assets.filter((s) => sponsorKeyOf(s) !== k) });
+    } else {
       set({ sponsor_assets: [...form.sponsor_assets, a] });
-      window.toast.success(`"${file.name}" added.`);
+    }
+  };
+
+  // Upload a brand-new sponsor: requires a UNIQUE name + a logo file. The name
+  // is stored as the asset's name, so the chip shows the sponsor name (not the
+  // filename) and duplicate names are rejected.
+  const addSponsor = async (file, rawName) => {
+    if (!file) return;
+    const name = (rawName || "").trim();
+    if (!name) { window.toast.error("Enter a sponsor name first."); return; }
+    if (sponsorNameTaken(name)) { window.toast.info(`"${name}" is already in your sponsors.`); return; }
+    try {
+      const a = await window.api.uploadAsset({ orgId: form.org_id, assetType: "sponsor-logos", file, name });
+      const patch = { sponsor_assets: [...form.sponsor_assets, a] };
+      if (!(form.sponsor_library || []).some((s) => sponsorKeyOf(s) === sponsorKeyOf(a))) {
+        patch.sponsor_library = [a, ...(form.sponsor_library || [])];
+      }
+      set(patch);
+      setNewSponsorName("");
+      window.toast.success(`"${name}" added.`);
     } catch (e) {
       window.toast.error(`Sponsor upload failed: ${e.message}`);
     }
   };
   const sponsorInputRef = React.useRef(null);
+  // Validate the typed name, then open the file picker for its logo.
+  const tryPickSponsorLogo = () => {
+    const name = newSponsorName.trim();
+    if (!name) { window.toast.error("Enter a sponsor name first."); return; }
+    if (sponsorNameTaken(name)) { window.toast.info(`"${name}" is already in your sponsors.`); return; }
+    if (sponsorInputRef.current) sponsorInputRef.current.click();
+  };
 
   return (
     <>
@@ -1399,7 +1529,43 @@ function Step4({ form, set }) {
         })}
       </div>
 
-      <SectionLabel n="04.B" label="Extras" />
+      <SectionLabel n="04.B" label="Render quality" hint="Higher quality = sharper detail, higher cost." />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 12 }}>
+        {QUALITY.filter((qq) => allowedQ.includes(qq.id)).map((qq) => {
+          const on = (form.quality || "medium") === qq.id;
+          const tierTotal = estimateCost({ ...form, quality: qq.id }).total;
+          return (
+            <button key={qq.id} onClick={() => set({ quality: qq.id })}
+              className="card"
+              style={{
+                padding: 18, cursor: "pointer", background: "transparent",
+                borderColor: on ? "var(--crim)" : "var(--line)",
+                outline: on ? "3px solid var(--crim-soft)" : "none", outlineOffset: -1,
+                textAlign: "left",
+              }}>
+              <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontFamily: "var(--f-display)", fontSize: 16 }}>{qq.name}</span>
+                <span className="mono" style={{
+                  fontSize: 11, padding: "2px 7px", borderRadius: 999,
+                  background: on ? "var(--crim-soft)" : "var(--surface-3)",
+                  color: on ? "var(--crim)" : "var(--fg-3)",
+                }}>×{qq.mult}</span>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--fg-2)", minHeight: 32 }}>{qq.blurb}</div>
+              <div className="mono" style={{ fontSize: 12.5, color: "var(--fg)", marginTop: 8 }}>≈ {rc(tierTotal)}</div>
+              {qq.recommended && (
+                <div className="mono" style={{ fontSize: 9.5, color: "var(--fg-4)", marginTop: 4, letterSpacing: "0.1em" }}>RECOMMENDED</div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      <div className="hint" style={{ marginBottom: 36 }}>
+        Relative to <b>Medium</b>: <b>Low</b> ≈ ×0.25, <b>High</b> ≈ ×4. Quality changes only the
+        image-generation cost — the prompt stage and your uploaded logos cost the same regardless.
+      </div>
+
+      <SectionLabel n="04.C" label="Extras" />
       <div className="col" style={{ gap: 12 }}>
         {canFeaturePlayer && (
           <ToggleCard
@@ -1418,17 +1584,50 @@ function Step4({ form, set }) {
           />
         )}
         <BackgroundSourceCard form={form} set={set} />
-        <ToggleCard
+        {feats.sponsor_bar && <ToggleCard
           title="Sponsor bar"
           desc="A strip of sponsor logos along the bottom of the poster."
           on={form.sponsor_bar}
           onChange={(v) => set({ sponsor_bar: v })}
           expand={form.sponsor_bar && (
             <>
-              <div className="hint" style={{ marginBottom: 10 }}>Upload sponsor logos. Recommended: 3–6.</div>
+              <div className="hint" style={{ marginBottom: 10 }}>
+                Pick from your library or upload new. Recommended: 3–6. Duplicate sponsors are skipped automatically.
+              </div>
+
+              {/* Quick pick — sponsor logos already uploaded for this org. Click to
+                  add/remove; selecting an already-added sponsor toggles it off. */}
+              {(form.sponsor_library || []).length > 0 && (
+                <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+                  <span className="mono" style={{ fontSize: 10, color: "var(--fg-4)", letterSpacing: "0.08em", marginRight: 2 }}>QUICK PICK:</span>
+                  {form.sponsor_library.map((a) => {
+                    const on = form.sponsor_assets.some((s) => sponsorKeyOf(s) === sponsorKeyOf(a));
+                    return (
+                      <button key={a.asset_id || sponsorKeyOf(a)}
+                        title={on ? "Remove from this poster" : "Add to this poster"}
+                        onClick={() => toggleSponsor(a)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 6,
+                          fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.04em",
+                          padding: "2px 8px 2px 3px",
+                          background: on ? "var(--crim-soft)" : "transparent",
+                          border: "1px solid " + (on ? "var(--crim-line)" : "var(--line)"), borderRadius: 999,
+                          color: "var(--fg-2)", cursor: "pointer",
+                        }}>
+                        {a.signed_url
+                          ? <img src={a.signed_url} alt="" style={{ width: 18, height: 18, borderRadius: 4, objectFit: "contain", background: "var(--surface-3)" }} />
+                          : <span style={{ width: 18, height: 18, borderRadius: 4, background: "var(--surface-3)" }} />}
+                        {sponsorLabel(a)}
+                        {on && <Icon name="check" size={10} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                 {form.sponsor_assets.map((s, i) => (
-                  <div key={s.asset_id} className="img-ph" style={{
+                  <div key={s.asset_id} title={s.name || sponsorLabel(s)} className="img-ph" style={{
                     height: 44, width: 100, fontSize: 9, letterSpacing: "0.16em",
                     backgroundImage: s.signed_url ? `url(${s.signed_url})` : "none",
                     backgroundSize: "contain", backgroundRepeat: "no-repeat", backgroundPosition: "center",
@@ -1444,16 +1643,27 @@ function Step4({ form, set }) {
                           }}>×</span>
                   </div>
                 ))}
-                <button className="img-ph" style={{ height: 44, width: 60, fontSize: 9, background: "transparent", color: "var(--fg-3)", borderStyle: "dashed", cursor: "pointer" }}
-                        onClick={() => sponsorInputRef.current && sponsorInputRef.current.click()}>
-                  + ADD
+              </div>
+
+              {/* Add a new sponsor — a unique name plus its logo file. */}
+              <div className="row" style={{ gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+                <input
+                  className="input"
+                  placeholder="Sponsor name (e.g. Red Bull)"
+                  value={newSponsorName}
+                  onChange={(e) => setNewSponsorName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); tryPickSponsorLogo(); } }}
+                  style={{ maxWidth: 220 }}
+                />
+                <button className="btn btn-ghost" onClick={tryPickSponsorLogo}>
+                  <Icon name="upload" size={13} /> Add logo
                 </button>
                 <input ref={sponsorInputRef} type="file" accept="image/png,image/jpeg,image/webp" style={{ display: "none" }}
-                       onChange={(e) => addSponsor(e.target.files && e.target.files[0])} />
+                       onChange={(e) => { addSponsor(e.target.files && e.target.files[0], newSponsorName); e.target.value = ""; }} />
               </div>
             </>
           )}
-        />
+        />}
       </div>
     </>
   );
@@ -1547,6 +1757,19 @@ function Step5({ form, jump, onGenerate, generating, error }) {
   const fmt = FORMATS.find((f) => f.id === form.format_id);
   const ptype = POSTER_TYPES.find((p) => p.id === form.poster_type);
   const cost = estimateCost(form);
+  const costTokens = tokensForUsd(cost.total);
+
+  // Red Coins balance, so we can price in tokens and block if short.
+  const [balance, setBalance] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    window.api.getCoins({ orgId: form.org_id })
+      .then((c) => { if (!cancelled) setBalance(c && typeof c.balance === "number" ? c.balance : null); })
+      .catch(() => { /* non-fatal — backend still enforces the gate */ });
+    return () => { cancelled = true; };
+  }, [form.org_id]);
+  const insufficient = balance != null && balance < costTokens;
+
   const groups = [
     { step: 1, title: "Game & type", fields: [
       ["Game", GAMES.find((g) => g.id === form.game)?.name],
@@ -1587,6 +1810,7 @@ function Step5({ form, jump, onGenerate, generating, error }) {
     ]},
     { step: 4, title: "Format & extras", fields: [
       ["Output", fmt ? `${fmt.name} · ${fmt.dims}` : "—"],
+      ["Quality", (() => { const q = form.quality || "medium"; const m = QUALITY_MULT[q] != null ? QUALITY_MULT[q] : 1.0; return `${q.charAt(0).toUpperCase() + q.slice(1)} · ×${m}`; })()],
       ["Featured player", form.featured_player ? (form.featured_player_asset ? "On · 1 image" : "On · no image") : "Off"],
       ["Sponsor bar", form.sponsor_bar ? `On · ${form.sponsor_assets.length} sponsors` : "Off"],
       ["Background",
@@ -1627,11 +1851,11 @@ function Step5({ form, jump, onGenerate, generating, error }) {
       {/* Itemized cost estimate */}
       <div className="card" style={{ padding: 20, marginBottom: 12 }}>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
-          <div className="row" style={{ gap: 12 }}>
-            <span className="mono" style={{ fontSize: 11, letterSpacing: "0.14em", color: "var(--crim)" }}>€</span>
+          <div className="row" style={{ gap: 12, alignItems: "center" }}>
+            <span style={{ width: 18, height: 18, borderRadius: "50%", background: "var(--crim)", display: "inline-block", flexShrink: 0 }} title="Red Coins" />
             <span style={{ fontFamily: "var(--f-display)", fontSize: 16 }}>Estimated cost</span>
           </div>
-          <span style={{ fontFamily: "var(--f-mono)", fontSize: 18, color: "var(--fg)" }}>{eur(cost.total)}</span>
+          <span style={{ fontFamily: "var(--f-mono)", fontSize: 18, color: "var(--fg)" }}>{rc(cost.total)}</span>
         </div>
         <div className="col" style={{ gap: 6 }}>
           {cost.items.map((it, i) => (
@@ -1640,14 +1864,14 @@ function Step5({ form, jump, onGenerate, generating, error }) {
               <span className="mono" style={{
                 color: it.amount < 0 ? "var(--ok)" : it.amount === 0 ? "var(--fg-4)" : "var(--fg-2)",
               }}>
-                {it.amount === 0 ? "free" : (it.amount < 0 ? "−" : "+") + "€" + Math.abs(it.amount).toFixed(3)}
+                {rcDelta(it.amount)}
               </span>
             </div>
           ))}
           <div style={{ height: 1, background: "var(--line)", margin: "6px 0" }} />
           <div className="row" style={{ justifyContent: "space-between", fontSize: 13, fontWeight: 600 }}>
             <span>Total{cost.floored ? " (minimum)" : ""}</span>
-            <span className="mono">{eur(cost.total)}</span>
+            <span className="mono">{rc(cost.total)}</span>
           </div>
         </div>
         <div className="hint" style={{ marginTop: 10 }}>
@@ -1671,25 +1895,42 @@ function Step5({ form, jump, onGenerate, generating, error }) {
       }}>
         <div className="ai-grid" style={{ position: "absolute", inset: 0, opacity: 0.3, pointerEvents: "none" }} />
         {(() => {
-          const blocked = !rosterPhotoValid(form);
+          const rosterBad = !rosterPhotoValid(form);
           const c = rosterPhotoCount(form);
-          const note = blocked && form.poster_type === "roster_reveal"
+          const note = rosterBad && form.poster_type === "roster_reveal"
             ? `Invalid roster — pick 0, 1, or all 5 player photos (currently ${c}).`
             : null;
+          const blocked = rosterBad || insufficient;
+          const headline = rosterBad
+            ? "Fix the roster photos to continue."
+            : insufficient
+              ? "Not enough Red Coins for this poster."
+              : "All looks good. Let's make this poster.";
           return (
             <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24 }}>
               <div>
                 <div className="badge ai" style={{ marginBottom: 12 }}><Icon name="sparkles" size={12} /> {blocked ? "Almost ready" : "Ready to generate"}</div>
                 <div style={{ fontFamily: "var(--f-display)", fontSize: 24, letterSpacing: "-0.01em", marginBottom: 6 }}>
-                  {blocked ? "Fix the roster photos to continue." : "All looks good. Let's make this poster."}
+                  {headline}
                 </div>
-                {blocked && note && (
+                {rosterBad && note && (
                   <div className="mono" style={{ fontSize: 12, color: "var(--crim)", marginBottom: 8 }}>{note}</div>
+                )}
+                {insufficient && !rosterBad && (
+                  <div className="mono" style={{ fontSize: 12, color: "var(--crim)", marginBottom: 8 }}>
+                    Need {fmtCoins(costTokens)} {coinSym()} · you have {fmtCoins(balance)} {coinSym()}. Top up to continue.
+                  </div>
                 )}
                 <div className="row" style={{ gap: 18, color: "var(--fg-3)", fontSize: 12.5 }}>
                   <span><span className="muted">Est. time</span> <span style={{ color: "var(--fg)", fontFamily: "var(--f-mono)" }}>20–60s</span></span>
                   <span style={{ width: 1, height: 14, background: "var(--line)" }} />
-                  <span><span className="muted">Est. cost</span> <span style={{ color: "var(--fg)", fontFamily: "var(--f-mono)" }}>{eur(cost.total)}</span></span>
+                  <span><span className="muted">Est. cost</span> <span style={{ color: "var(--fg)", fontFamily: "var(--f-mono)" }}>{rc(cost.total)}</span></span>
+                  {balance != null && (
+                    <>
+                      <span style={{ width: 1, height: 14, background: "var(--line)" }} />
+                      <span><span className="muted">Balance</span> <span style={{ color: insufficient ? "var(--crim)" : "var(--fg)", fontFamily: "var(--f-mono)" }}>{fmtCoins(balance)} {coinSym()}</span></span>
+                    </>
+                  )}
                 </div>
               </div>
               <button className="btn btn-ai btn-lg" style={{ height: 54, padding: "0 32px", fontSize: 15, opacity: blocked ? 0.5 : 1, cursor: blocked ? "not-allowed" : "pointer" }}
@@ -1784,6 +2025,14 @@ function Wizard({ navigate }) {
         set({ team_logo_library: buildTeamLogoLibrary(res.assets || []) });
       })
       .catch(() => { /* non-fatal — quick-pick just falls back to static presets */ });
+
+    // Sponsor logos already in the brand library, deduped to one chip per sponsor.
+    window.api.listAssets({ orgId: form.org_id, assetType: "sponsor-logos", limit: 200 })
+      .then((res) => {
+        if (cancelled) return;
+        set({ sponsor_library: buildSponsorLibrary(res.assets || []) });
+      })
+      .catch(() => { /* non-fatal — quick-pick just stays empty */ });
     return () => { cancelled = true; };
   }, [form.org_id]);
 
@@ -1801,12 +2050,20 @@ function Wizard({ navigate }) {
         tournamentId,
         input,
       });
-      clearWizardDraft();  // submitted — start fresh next time
+      // Keep the draft until the job actually SUCCEEDS (cleared on the progress
+      // page when status === completed). That way a failed generation — e.g. a
+      // rejected background — can be retried without re-filling the whole form.
       navigate(`#/job/${job.job_id}`);
     } catch (e) {
+      // Friendly message for insufficient Red Coins (402).
+      if (e.status === 402 && e.body && e.body.detail) {
+        const d = e.body.detail;
+        setSubmitError(
+          `Not enough Red Coins — this poster needs ${fmtCoins(d.needed)} RC and you have ${fmtCoins(d.balance)} RC. Top up to continue.`
+        );
       // Friendly message for rate-limit (429): show which window was hit
       // and when one slot frees up.
-      if (e.status === 429 && e.body && e.body.detail) {
+      } else if (e.status === 429 && e.body && e.body.detail) {
         const d = e.body.detail;
         const w = (d.windows || []).find((x) => x.remaining <= 0) || (d.windows || [])[0];
         const reset = w && w.reset_at ? new Date(w.reset_at).toLocaleString() : "later";
@@ -1871,4 +2128,4 @@ function Wizard({ navigate }) {
   );
 }
 
-Object.assign(window, { Wizard });
+Object.assign(window, { Wizard, clearWizardDraft, setWizardDraftStep, WIZARD_BACKGROUND_STEP });

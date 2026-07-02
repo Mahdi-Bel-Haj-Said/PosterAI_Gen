@@ -103,10 +103,16 @@ function UploadTile({ assetType, orgId, onUploaded, team, removeBackground, disa
   );
 }
 
+// Module-level cache survives navigation (same pattern as the dashboard): a
+// return to the Brand Library renders instantly from the last data and refreshes
+// in the background. Reuses _mergeStableUrl / _keepImages from dashboard.jsx so
+// asset thumbnails keep their cached image instead of re-downloading.
+const _brandCache = {}; // orgId -> assets[]
+
 function BrandLibrary({ navigate }) {
   const orgId = (window.api && window.api.orgId) || "1";
-  const [assets, setAssets] = React.useState([]);
-  const [loading, setLoading] = React.useState(true);
+  const [assets, setAssets] = React.useState(() => _brandCache[orgId] || []);
+  const [loading, setLoading] = React.useState(() => _brandCache[orgId] == null);
   const [error, setError] = React.useState(null);
   const [tab, setTab] = React.useState("team-logos");
   const [selectedTeam, setSelectedTeam] = React.useState("");      // "" = all
@@ -116,7 +122,10 @@ function BrandLibrary({ navigate }) {
   const fetchAssets = React.useCallback(async () => {
     try {
       const data = await window.api.listAssets({ orgId, limit: 200 });
-      setAssets(data.assets || []);
+      const merged = _mergeStableUrl(_brandCache[orgId], data.assets || [], "signed_url");
+      _brandCache[orgId] = merged;
+      _keepImages(merged, "signed_url");
+      setAssets(merged);
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -145,8 +154,10 @@ function BrandLibrary({ navigate }) {
     current = current.filter((a) => (a.team || "").toLowerCase() === selectedTeam.toLowerCase());
   }
 
-  const onUploaded = (a) => setAssets((prev) => [a, ...prev]);
-  const onDelete = (id) => setAssets((prev) => prev.filter((a) => a.asset_id !== id));
+  // Write-through to the cache so navigating away and back reflects the change
+  // immediately (no stale entry reappearing before the next refresh).
+  const onUploaded = (a) => setAssets((prev) => { const next = [a, ...prev]; _brandCache[orgId] = next; return next; });
+  const onDelete = (id) => setAssets((prev) => { const next = prev.filter((a) => a.asset_id !== id); _brandCache[orgId] = next; return next; });
 
   const addTeam = () => {
     const name = (window.prompt("New team name (e.g. FNATIC):") || "").trim();

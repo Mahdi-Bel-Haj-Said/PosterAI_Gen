@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PIL import Image
 
+from esports_poster_ai.sponsors_layout import reserved_height_px
 from esports_poster_ai.stages.sponsor_bar import (
     _choose_bar_color,
     _logos_mean_brightness,
@@ -81,14 +82,31 @@ def test_detect_bar_config_returns_expected_keys():
         "padding_x",
         "padding_y",
     }
-    assert cfg["height"] >= 56
-    assert cfg["height"] <= 88
+    # Bar height is the reserved strip for the poster's orientation (400x800 is
+    # portrait -> 10%), matching what the prompt tells the model to clear.
+    assert cfg["height"] == reserved_height_px(400, 800)
     assert 0.55 <= cfg["opacity"] <= 0.85
     assert cfg["background_color"].startswith("#")
 
 
-def test_detect_bar_config_clamps_bar_height_for_huge_logos():
+def test_detect_bar_config_height_follows_reserved_fraction_not_logo_size():
+    # Bar height is pinned to the reserved fraction; a huge logo does NOT
+    # change it (the logo scales to fit the strip instead).
     poster = _solid(400, 800, (0, 0, 0))
     huge_logo = _solid(200, 500, (255, 255, 255))
-    cfg = detect_bar_config(poster, [huge_logo])
-    assert cfg["height"] <= 88
+    tiny_logo = _solid(20, 20, (255, 255, 255))
+    expected = reserved_height_px(400, 800)
+    assert detect_bar_config(poster, [huge_logo])["height"] == expected
+    assert detect_bar_config(poster, [tiny_logo])["height"] == expected
+
+
+def test_detect_bar_config_height_varies_by_orientation():
+    logos = [_solid(50, 50, (255, 255, 255))]
+    portrait = detect_bar_config(_solid(1080, 1920, (10, 10, 10)), logos)["height"]
+    square = detect_bar_config(_solid(1080, 1080, (10, 10, 10)), logos)["height"]
+    landscape = detect_bar_config(_solid(1920, 1080, (10, 10, 10)), logos)["height"]
+    # Portrait reserves the largest fraction (10%), landscape the smallest (5%).
+    assert portrait == reserved_height_px(1080, 1920)   # 192
+    assert square == reserved_height_px(1080, 1080)      # 86
+    assert landscape == reserved_height_px(1920, 1080)   # 54
+    assert portrait > square > landscape

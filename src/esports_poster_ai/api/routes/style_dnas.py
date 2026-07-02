@@ -10,6 +10,8 @@ Style DNA used by consistency mode.
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import PurePosixPath
 from typing import Optional
 
@@ -69,6 +71,19 @@ def _dna_response(dna) -> StyleDNAResponse:
     return StyleDNAResponse.from_dna(dna, source_poster_url=_source_poster_url(dna))
 
 
+# Short-lived in-memory cache for the org-wide list. The list endpoint makes
+# several R2 round-trips per tournament (list + load + source-poster check) and
+# R2 latency dominates, so a brief TTL keeps the dashboard snappy on repeat
+# loads. Invalidated immediately whenever a DNA is created/edited/approved/
+# deleted, so users never see a stale library.
+_LIST_CACHE: dict = {}
+_LIST_CACHE_TTL = 60.0
+
+
+def _invalidate_list_cache(platform_id, org_id) -> None:
+    _LIST_CACHE.pop((platform_id, org_id), None)
+
+
 # ---------------------------------------------------------------- list (org-wide)
 @router.get("", response_model=StyleDNAListResponse)
 def list_style_dnas(
@@ -86,6 +101,13 @@ def list_style_dnas(
     which previously could only be reconstructed client-side from job history.
     """
     org_id = auth.require_org(org_id)
+
+    cache_key = (auth.platform_id, org_id)
+    now = time.monotonic()
+    cached = _LIST_CACHE.get(cache_key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+
     storage = get_storage()
     keys = get_keys(platform_id=auth.platform_id)
 
@@ -106,13 +128,24 @@ def list_style_dnas(
                 seen.add(tid)
                 tournament_ids.append(tid)
 
-    items = []
-    for tid in sorted(tournament_ids):
+    # Resolve each tournament's active DNA in PARALLEL. Each resolve does a
+    # couple of R2 round-trips (load + source-poster signing) and R2 latency
+    # dominates, so fanning out turns an N x latency wait into roughly 1 x.
+    def _resolve(tid: str):
         located = load_active(org_id, tid, keys=keys)
-        if located is not None:
-            items.append(_dna_response(located.dna))
+        return _dna_response(located.dna) if located is not None else None
 
-    return StyleDNAListResponse(style_dnas=items, count=len(items))
+    items = []
+    ordered = sorted(tournament_ids)
+    if ordered:
+        with ThreadPoolExecutor(max_workers=min(8, len(ordered))) as ex:
+            for r in ex.map(_resolve, ordered):
+                if r is not None:
+                    items.append(r)
+
+    resp = StyleDNAListResponse(style_dnas=items, count=len(items))
+    _LIST_CACHE[cache_key] = (now + _LIST_CACHE_TTL, resp)
+    return resp
 
 
 # ---------------------------------------------------------------- extract
@@ -161,6 +194,7 @@ def extract_style_dna_endpoint(
         source_reference=job.storage_key,
     )
     save_draft(dna, org_id, keys=get_keys(platform_id=auth.platform_id))
+    _invalidate_list_cache(auth.platform_id, org_id)
     logger.info(
         "api.style_dna.extracted",
         extra={"org_id": org_id, "tournament_id": tournament_id},
@@ -229,6 +263,7 @@ def update_style_dna(
         raise HTTPException(status_code=422, detail=jsonable_encoder(e.errors()))
 
     save_draft(dna, org_id, keys=get_keys(platform_id=auth.platform_id))
+    _invalidate_list_cache(auth.platform_id, org_id)
     return _dna_response(dna)
 
 
@@ -249,6 +284,7 @@ def approve_style_dna(
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    _invalidate_list_cache(auth.platform_id, org_id)
     return _dna_response(dna)
 
 
@@ -264,4 +300,5 @@ def delete_style_dna(
     """Remove both the draft and approved Style DNA objects for this tournament."""
     org_id = auth.require_org(org_id)
     delete_for_tournament(org_id, tournament_id, keys=get_keys(platform_id=auth.platform_id))
+    _invalidate_list_cache(auth.platform_id, org_id)
     return Response(status_code=204)

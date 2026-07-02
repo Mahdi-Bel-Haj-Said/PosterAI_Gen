@@ -42,6 +42,8 @@ const Icon = ({ name, size = 16 }) => {
     // can toggle "active vs inactive" purely by changing the wrapper's color
     // (bright accent vs dim grey) instead of swapping two icon variants.
     star: <path d="M10 2.2l2.36 4.78 5.27.77-3.81 3.72.9 5.25L10 14.25 5.28 16.72l.9-5.25-3.81-3.72 5.27-.77z" fill="currentColor" stroke="currentColor" strokeWidth="0.5"/>,
+    expand: <path d="M8 4H4v4M12 4h4v4M16 12v4h-4M8 16H4v-4"/>,
+    coins: <><ellipse cx="8" cy="6" rx="5" ry="2.4"/><path d="M3 6v4c0 1.3 2.2 2.4 5 2.4s5-1.1 5-2.4V6"/><path d="M9 13.6c.6 1 2.5 1.8 4.5 1.8 2.8 0 5-1.1 5-2.4v-4c0-1-1.3-1.9-3.2-2.2"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 20 20" fill="none"
@@ -56,12 +58,15 @@ const NAV = [
     { id: "dashboard", label: "Dashboard", icon: "home", route: "#/" },
     { id: "create",    label: "Create poster", icon: "sparkles", route: "#/create", accent: true },
     { id: "history",   label: "History",   icon: "layers", route: "#/history", badge: "247" },
+    { id: "billing",   label: "Plans & billing", icon: "coins", route: "#/billing" },
+    { id: "settings",  label: "Settings", icon: "settings", route: "#/settings" },
   ]},
   { group: "Library", items: [
     { id: "brand",     label: "Brand library", icon: "image", route: "#/brand" },
     { id: "tournaments", label: "Tournaments", icon: "trophy", route: "#/tournaments" },
   ]},
   { group: "Admin", items: [
+    { id: "clients",   label: "Clients",    icon: "user",  route: "#/admin/clients" },
     { id: "keys",      label: "API keys",   icon: "key",   route: "#/admin/keys" },
     { id: "usage",     label: "Usage & billing", icon: "chart", route: "#/admin/usage" },
   ]},
@@ -160,7 +165,36 @@ function NavQuota() {
   return <div style={{ display: "flex", gap: 6 }}>{quotas.map(pill)}</div>;
 }
 
-function TopBar({ crumbs }) {
+// Red Coins balance pill in the topbar. Polls so it reflects spends + grants.
+function CoinBalance() {
+  const [bal, setBal] = React.useState(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    const orgId = (window.api && window.api.orgId) || "1";
+    const tick = () => window.api.getCoins({ orgId })
+      .then((c) => { if (!cancelled && c && typeof c.balance === "number") setBal(c.balance); })
+      .catch(() => { /* non-fatal */ });
+    tick();
+    const t = setInterval(tick, 10000);
+    const onChange = () => tick();
+    window.addEventListener("epai:coins-changed", onChange);
+    return () => { cancelled = true; clearInterval(t); window.removeEventListener("epai:coins-changed", onChange); };
+  }, []);
+  if (bal == null) return null;
+  return (
+    <div title="Red Coins — open billing" onClick={() => { window.location.hash = "/billing"; }} style={{
+      display: "flex", alignItems: "center", gap: 7,
+      padding: "7px 12px", borderRadius: 999, cursor: "pointer",
+      background: "var(--bg-elev)", border: "1px solid var(--line-strong)",
+    }}>
+      <span style={{ width: 10, height: 10, borderRadius: "50%", background: "var(--crim)", boxShadow: "0 0 6px var(--crim)", flexShrink: 0 }} />
+      <span style={{ fontFamily: "var(--f-display)", fontSize: 14 }}>{bal.toLocaleString()}</span>
+      <span className="mono" style={{ fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.08em" }}>{coinSym()}</span>
+    </div>
+  );
+}
+
+function TopBar({ crumbs, navigate }) {
   return (
     <div className="topbar">
       <div className="crumbs">
@@ -172,9 +206,10 @@ function TopBar({ crumbs }) {
         ))}
       </div>
       <div style={{ flex: 1 }} />
+      <CoinBalance />
       <NavQuota />
       <div className="icon-btn"><Icon name="search" /></div>
-      <div className="icon-btn"><Icon name="bell" /><span className="pip" /></div>
+      <NotificationBell navigate={navigate} />
       <div className="icon-btn"><Icon name="settings" /></div>
       <div style={{ width: 1, height: 24, background: "var(--line)" }} />
       <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -190,13 +225,17 @@ function Shell({ route, navigate, crumbs, children }) {
     <div className="app">
       <Sidebar route={route} navigate={navigate} />
       <div className="col" style={{ minWidth: 0 }}>
-        <TopBar crumbs={crumbs} />
+        <TopBar crumbs={crumbs} navigate={navigate} />
         <div className="main">{children}</div>
       </div>
       {/* Global notification stack — anything in the app pushes via
           window.toast.error / .success / .info; the stack is fixed
           top-right and overlays every route. */}
       <Toaster />
+      {/* Background watcher: polls jobs on every route and fires a toast +
+          notification when one finishes, so the user is told even after
+          navigating away from the job page. Renders nothing. */}
+      <JobWatcher navigate={navigate} />
     </div>
   );
 }

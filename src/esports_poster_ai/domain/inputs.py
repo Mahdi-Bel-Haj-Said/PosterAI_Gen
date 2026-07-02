@@ -35,6 +35,9 @@ OutputFormat = Literal[
     "square_1080x1080",
     "landscape_1920x1080",
 ]
+# Image-model render quality. Drives the gpt-image-2 `quality` param and the
+# per-poster cost (low is cheapest, high is sharpest + most expensive).
+Quality = Literal["low", "medium", "high"]
 
 # Visual-style presets surfaced in the input UI's "Visual style" step.
 VibePreset = Literal[
@@ -61,6 +64,7 @@ class Meta(_Loose):
     poster_type: PosterType
     mode: Mode = "fresh"
     output_format: OutputFormat = "portrait_1080x1920"
+    quality: Quality = "medium"
 
 
 class Team(_Loose):
@@ -160,6 +164,7 @@ __all__ = [
     "PosterType",
     "Mode",
     "OutputFormat",
+    "Quality",
     "VibePreset",
     "DesignEnergy",
 ]

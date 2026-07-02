@@ -298,6 +298,41 @@ class JobStore:
         out.sort(key=lambda r: r.get("completed", 0), reverse=True)
         return out
 
+    def list_platforms_aggregate(self) -> List[Dict[str, Any]]:
+        """
+        Per-platform rollup (groups jobs by `platform_id`) for the provider's
+        Clients view. Python-side so it works on every Mongo/mongomock; the
+        volume here is one row per integrating customer, not per poster.
+
+        Returns dicts keyed by platform with totals + 30d window + activity.
+        `platform_id` may be None (dev / no API key) — that's a valid bucket.
+        """
+        now = _now()
+        since_30d = datetime.fromtimestamp(now.timestamp() - 30 * 24 * 3600, tz=timezone.utc)
+        rollup: Dict[Any, Dict[str, Any]] = {}
+        for doc in self._col.find(
+            {}, {"platform_id": 1, "status": 1, "created_at": 1, "_id": 0}
+        ):
+            pid = doc.get("platform_id")
+            row = rollup.setdefault(pid, {
+                "platform_id": pid, "total_jobs": 0, "completed": 0, "failed": 0,
+                "completed_30d": 0, "first_activity_at": None, "last_activity_at": None,
+            })
+            row["total_jobs"] += 1
+            status, ca = doc.get("status"), doc.get("created_at")
+            if status == "completed":
+                row["completed"] += 1
+                if ca and ca >= since_30d:
+                    row["completed_30d"] += 1
+            elif status == "failed":
+                row["failed"] += 1
+            if ca:
+                if row["first_activity_at"] is None or ca < row["first_activity_at"]:
+                    row["first_activity_at"] = ca
+                if row["last_activity_at"] is None or ca > row["last_activity_at"]:
+                    row["last_activity_at"] = ca
+        return list(rollup.values())
+
     # ---------------------------------------------------------------- update
     def mark_running(self, job_id: str) -> None:
         """Stamp `started_at` when the worker picks the job up."""

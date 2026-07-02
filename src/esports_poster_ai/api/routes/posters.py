@@ -8,14 +8,14 @@ pipeline logic lives here.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response as FastAPIResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from esports_poster_ai.api.deps import AuthContext, get_auth_context, get_org_store
 from esports_poster_ai.api.schemas import (
@@ -25,6 +25,8 @@ from esports_poster_ai.api.schemas import (
     RefinePosterRequest,
 )
 from esports_poster_ai.orgs.store import OrgStore
+from esports_poster_ai.billing import quality_multiplier
+from esports_poster_ai.platforms import branding_for, economics_for, features_for
 from esports_poster_ai.clients.gemini_client import GeminiError
 from esports_poster_ai.config import get_settings
 from esports_poster_ai.domain.inputs import PosterInput
@@ -39,6 +41,35 @@ from esports_poster_ai.storage.base import Storage
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/posters", tags=["posters"])
+
+
+def _assert_coins_or_raise(
+    org_store: OrgStore, auth: AuthContext, org_id: str, quality: str | None
+) -> int:
+    """
+    Ensure the org has enough Red Coins for one poster at this quality.
+
+    Credits any due monthly grant first, then blocks with HTTP 402 if the balance
+    is short. Returns the estimated token cost so callers can surface it.
+    """
+    est = economics_for(auth.platform_id).estimate_tokens(quality_multiplier(quality))
+    org = org_store.ensure_monthly_grant(auth.platform_id, org_id)
+    if org is None:
+        # Dev path: org not registered yet — create it (seeds its first grant).
+        org_store.ensure(auth.platform_id, org_id)
+        org = org_store.ensure_monthly_grant(auth.platform_id, org_id)
+    balance = org.coins_balance if org else 0
+    if balance < est:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "insufficient_coins",
+                "message": "Not enough Red Coins for this poster.",
+                "needed": est,
+                "balance": balance,
+            },
+        )
+    return est
 
 
 def get_job_store() -> JobStore:
@@ -83,9 +114,21 @@ def create_poster(
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=jsonable_encoder(e.errors()))
 
+    # Feature entitlements for this client (what they enabled for their orgs).
+    feats = features_for(auth.platform_id)
+    if poster.meta.mode == "consistency" and not feats.consistency:
+        raise HTTPException(status_code=403, detail="Consistency mode is not enabled on this plan.")
+    if poster.meta.quality not in feats.allowed_qualities:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Quality '{poster.meta.quality}' is not available on this plan.",
+        )
+
     quotas = check_quota_or_raise(
         org_id, platform_id=auth.platform_id, limits=limits, job_store=store
     )
+    # Red Coins gate (in addition to the rolling quota). Charged on success.
+    _assert_coins_or_raise(org_store, auth, org_id, poster.meta.quality)
 
     job = enqueue_poster_job(
         input_data=req.input,
@@ -97,6 +140,44 @@ def create_poster(
     apply_quota_headers(response, quotas)
     logger.info("api.poster.created", extra={"job_id": job.job_id})
     return JobResponse.from_job(job)
+
+
+class EstimateRequest(BaseModel):
+    org_id: Optional[str] = Field(default=None, description="Org id (taken from the key when omitted).")
+    input: Dict[str, Any] = Field(..., description="A PosterInput document, same shape as POST /v1/posters.")
+
+
+@router.post("/estimate")
+def estimate_poster(
+    req: EstimateRequest,
+    auth: AuthContext = Depends(get_auth_context),
+    org_store: OrgStore = Depends(get_org_store),
+) -> Dict[str, Any]:
+    """
+    Price a poster WITHOUT generating it — returns the Red Coins it would cost
+    under this client's economics, the org's current balance, and whether it's
+    affordable. Clients call this to show a cost before the user hits generate,
+    instead of reimplementing the pricing formula.
+    """
+    org_id = auth.require_org(req.org_id)
+    try:
+        poster = PosterInput.model_validate(req.input)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=jsonable_encoder(e.errors()))
+
+    econ = economics_for(auth.platform_id)
+    tokens = econ.estimate_tokens(quality_multiplier(poster.meta.quality))
+    org = org_store.ensure_monthly_grant(auth.platform_id, org_id)
+    balance = org.coins_balance if org else 0
+    return {
+        "org_id": org_id,
+        "quality": poster.meta.quality,
+        "tokens": tokens,                         # cost of THIS poster, in coins
+        "balance": balance,
+        "sufficient": balance >= tokens,
+        "coin_symbol": branding_for(auth.platform_id).coin_symbol,
+        "est_per_poster": {q: econ.estimate_tokens(quality_multiplier(q)) for q in ("low", "medium", "high")},
+    }
 
 
 @router.post("/{job_id}/refine", status_code=202, response_model=JobResponse)
@@ -135,13 +216,19 @@ def refine_poster(
         parent.org_id, platform_id=parent.platform_id, limits=parent_limits, job_store=store
     )
 
+    if not features_for(auth.platform_id).refine:
+        raise HTTPException(status_code=403, detail="Refine is not enabled on this plan.")
     parent_meta = (parent.input_data or {}).get("_meta") or {}
+    refine_quality = parent_meta.get("quality", "medium")
+    # Red Coins gate — a refine is a full image-edit pass, so it costs too.
+    _assert_coins_or_raise(org_store, auth, parent.org_id, refine_quality)
     refine_input = {
         "_meta": {
             "game": parent_meta.get("game", "league_of_legends"),
             "poster_type": parent_meta.get("poster_type", "gameday"),
             "mode": "refine",
             "output_format": parent_meta.get("output_format", "portrait_1080x1920"),
+            "quality": refine_quality,
         },
         "refine": {
             "parent_job_id": parent.job_id,
@@ -247,6 +334,8 @@ def generate_caption(
     calls return the cached caption unless ``regenerate=true``. Returns 503
     when GEMINI_API_KEY isn't configured so the frontend can hide the feature.
     """
+    if not features_for(auth.platform_id).caption:
+        raise HTTPException(status_code=403, detail="Captions are not enabled on this plan.")
     if not get_settings().gemini_api_key:
         raise HTTPException(
             status_code=503,

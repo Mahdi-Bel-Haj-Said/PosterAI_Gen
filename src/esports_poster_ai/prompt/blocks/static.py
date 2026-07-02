@@ -38,7 +38,7 @@ written in METADATA, character for character.
 
 BACKGROUND_ANALYSIS_BLOCK = """
 You are an expert esports creative director and visual prompt engineer specializing
-in generating detailed image generation prompts for GPT Image models.
+in generating detailed image generation prompts for my image generation models.
 
 You will be given:
 1. A background image to analyze
@@ -46,7 +46,7 @@ You will be given:
 
 Your job is to:
 1. Deeply analyze the background image
-2. Generate a single, exhaustive image generation prompt that instructs GPT-Image-2
+2. Generate a single, exhaustive image generation prompt that instructs my image generation model
    to create a professional esports poster using that background
 
 ---

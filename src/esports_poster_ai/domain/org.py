@@ -55,6 +55,13 @@ class Org(BaseModel):
     limits: OrgRateLimits = Field(default_factory=OrgRateLimits)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    # Red Coins (token) balance. `coins_period_start` is when the current monthly
+    # grant window began; None means "never granted yet" (legacy orgs get their
+    # first grant on first access). See billing/coins.py + orgs/store.py.
+    coins_balance: int = 0
+    coins_spent: int = 0                  # lifetime Red Coins spent on posters
+    coins_period_start: Optional[datetime] = None
+
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 

@@ -36,10 +36,46 @@ from tenacity import (
 )
 
 from esports_poster_ai.config import Settings, get_settings, require_openai_key
+from esports_poster_ai.errors import BackgroundRejectedError
 
 T = TypeVar("T", bound=BaseModel)
 
 logger = logging.getLogger(__name__)
+
+
+# Shown to the user when the vision model declines to analyze the background.
+_BACKGROUND_REJECTED_MSG = (
+    "We couldn't use this background. The AI image analyzer rejected it, which "
+    "almost always means it contains copyrighted or recognizable content "
+    "(official game art, characters, or team logos baked into the image). "
+    "Go back and pick a different background — original or properly-licensed "
+    "artwork with no recognizable characters or logos works best."
+)
+
+_REFUSAL_PREFIXES = (
+    "i'm sorry", "i am sorry", "sorry,", "i can't", "i cannot", "i can not",
+    "i'm unable", "i am unable", "i won't", "i will not", "unfortunately, i",
+)
+_REFUSAL_SNIPPETS = (
+    "can't assist", "cannot assist", "can't help with", "cannot help with",
+    "unable to assist", "unable to help", "can't provide", "cannot provide",
+)
+
+
+def _looks_like_refusal(text: str) -> bool:
+    """Heuristic: does the model's reply read like a content refusal, not a prompt?
+
+    A real image-generation prompt is long, descriptive scene text; a refusal is
+    short and apologetic. We only inspect the opening so a legitimate prompt that
+    merely contains the word "cannot" later on isn't misflagged.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if t.startswith(_REFUSAL_PREFIXES):
+        return True
+    head = t[:200]
+    return any(s in head for s in _REFUSAL_SNIPPETS)
 
 
 # Errors we consider transient and worth retrying.
@@ -97,6 +133,7 @@ class OpenAIClient:
         *,
         background_image: bytes,
         assembled_prompt: str,
+        instructions: Optional[str] = None,
         max_output_tokens: Optional[int] = None,
         model: Optional[str] = None,
         run_id: Optional[str] = None,
@@ -104,6 +141,10 @@ class OpenAIClient:
         """
         Send the assembled prompt + background image to the vision model and
         return the image-generation prompt text.
+
+        `instructions` is an optional system-level steer (the Responses API
+        `instructions` field) — used to pin the model's role and force faithful
+        carry-through of the style directives.
         """
         run_id = run_id or new_run_id()
         model = model or self.settings.openai_prompt_model
@@ -123,10 +164,19 @@ class OpenAIClient:
             max_output_tokens=max_output_tokens,
             assembled_prompt=assembled_prompt,
             image_bytes=background_image,
+            instructions=instructions,
         )
 
-        if not text:
-            raise RuntimeError(f"[{run_id}] Prompt model returned empty text.")
+        # An empty response, or a polite refusal, from the vision model almost
+        # always means it declined to analyze the background (copyrighted /
+        # recognizable content). Surface that as an actionable, user-facing error
+        # instead of a cryptic "empty text".
+        if not text or _looks_like_refusal(text):
+            logger.warning(
+                "prompt_stage.background_rejected",
+                extra={"run_id": run_id, "head": (text or "")[:120]},
+            )
+            raise BackgroundRejectedError(_BACKGROUND_REJECTED_MSG)
 
         logger.info("prompt_stage.done", extra={"run_id": run_id, "chars": len(text)})
         return text
@@ -274,13 +324,14 @@ class OpenAIClient:
         max_output_tokens: int,
         assembled_prompt: str,
         image_bytes: bytes,
+        instructions: Optional[str] = None,
     ) -> str:
         @self._retry_policy()
         def _do() -> str:
-            resp = self._client.responses.create(
-                model=model,
-                max_output_tokens=max_output_tokens,
-                input=[
+            kwargs = {
+                "model": model,
+                "max_output_tokens": max_output_tokens,
+                "input": [
                     {
                         "role": "user",
                         "content": [
@@ -292,7 +343,10 @@ class OpenAIClient:
                         ],
                     }
                 ],
-            )
+            }
+            if instructions:
+                kwargs["instructions"] = instructions
+            resp = self._client.responses.create(**kwargs)
             return (getattr(resp, "output_text", None) or "").strip()
 
         try:

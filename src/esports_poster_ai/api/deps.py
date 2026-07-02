@@ -144,9 +144,17 @@ class AuthContext:
                     "Register it first via POST /v1/orgs."
                 ),
             )
-        if org is None:
+        # Merge: org override wins; otherwise fall back to the platform's default
+        # quotas (set by the client); anything still None -> service defaults
+        # (filled downstream in the limiter).
+        from esports_poster_ai.platforms import quotas_for
+        plat_q = quotas_for(self.platform_id).model_dump()
+        org_q = org.limits.model_dump() if org is not None else {"day": None, "week": None, "month": None}
+        merged = {f: (org_q.get(f) if org_q.get(f) is not None else plat_q.get(f)) for f in ("day", "week", "month")}
+        # If nothing is set at either level, return None so the global defaults apply.
+        if org is None and not any(v is not None for v in merged.values()):
             return None
-        return org.limits.model_dump()
+        return merged
 
     def assert_platform(self, resource_platform_id: Optional[str]) -> None:
         """

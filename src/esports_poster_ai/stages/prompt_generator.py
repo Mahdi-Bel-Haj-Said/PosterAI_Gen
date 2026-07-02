@@ -16,9 +16,35 @@ from esports_poster_ai.clients.openai_client import (
     new_run_id,
 )
 from esports_poster_ai.config import Settings, get_settings
-from esports_poster_ai.prompt.assembler import build_image_factual_footer, build_prompt
+from esports_poster_ai.prompt.assembler import (
+    build_image_factual_footer,
+    build_image_style_footer,
+    build_prompt,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# System steering for the prompt stage. Without it, GPT-4o is handed an
+# image-model instruction set plus the real background and tends to describe
+# the scene it sees — softening the user's requested color/vibe/energy. This
+# pins its role and makes faithful style carry-through a hard requirement.
+PROMPT_STAGE_INSTRUCTIONS = (
+    "You are a prompt engineer for an esports-poster image model (gpt-image-2) "
+    "running in EDIT mode on the provided background image. Your job is to turn "
+    "the structured brief below into a single, vivid image-generation prompt.\n"
+    "Hard requirements:\n"
+    "- Faithfully carry through EVERY directive in the VISUAL STYLE section "
+    "(fresh mode) or the CONSISTENCY MODE / STYLE DNA CONSTRAINTS section "
+    "(consistency mode) — the dominant color or DNA palette, vibe/lighting, and "
+    "energy. Instruct the model to color-grade the WHOLE frame toward those "
+    "colors, not just accents or text, even when that means overriding the "
+    "source background's existing palette.\n"
+    "- Preserve all factual text (team names, scores, dates, tournament) exactly "
+    "as given; never invent names, scores, or logos.\n"
+    "- Output ONLY the image-generation prompt — no preamble, no commentary, no "
+    "markdown."
+)
 
 
 def generate_image_prompt(
@@ -59,10 +85,17 @@ def generate_image_prompt(
     gpt4o_prompt = api.generate_prompt(
         background_image=background_image,
         assembled_prompt=assembled,
+        instructions=PROMPT_STAGE_INSTRUCTIONS,
         run_id=run_id,
     )
 
-    # Append the verbatim factual data + render rules directly onto the prompt
-    # the image model receives — bypassing GPT-4o's paraphrase.
-    footer = build_image_factual_footer(input_data)
-    return f"{gpt4o_prompt}\n\n{footer}"
+    # Append the verbatim footers directly onto the prompt the image model
+    # receives — bypassing GPT-4o's paraphrase. The factual footer pins names /
+    # scores / dates; the style footer pins the dominant color / vibe / energy
+    # and forces a whole-frame color grade instead of a mere accent.
+    factual_footer = build_image_factual_footer(input_data)
+    style_footer = build_image_style_footer(input_data, style_dna=style_dna)
+    parts = [gpt4o_prompt, factual_footer]
+    if style_footer:
+        parts.append(style_footer)
+    return "\n\n".join(parts)

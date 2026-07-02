@@ -31,6 +31,7 @@ const BG_MOODS = {
 function App() {
   const [route, setRoute] = React.useState(() => location.hash.replace("#", "") || "/");
   const [tw, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [, setBrandReady] = React.useState(0);
 
   React.useEffect(() => {
     const onHash = () => {
@@ -39,6 +40,19 @@ function App() {
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  // Load this client's white-label config once and apply name/colors. Bumping
+  // state re-renders the tree so coin labels etc. pick up the client's branding.
+  React.useEffect(() => {
+    window.api.getMyConfig().then((cfg) => {
+      const b = (cfg && cfg.branding) || {};
+      const r = document.documentElement;
+      if (b.accent_color) r.style.setProperty("--crim", b.accent_color);
+      if (b.ai_accent_color) r.style.setProperty("--cy", b.ai_accent_color);
+      if (b.product_name) document.title = b.product_name;
+      setBrandReady((n) => n + 1);
+    }).catch(() => { /* non-fatal — defaults apply */ });
   }, []);
 
   const navigate = (h) => { location.hash = h.replace("#", ""); };
@@ -91,6 +105,15 @@ function App() {
   } else if (route.startsWith("/brand")) {
     content = <BrandLibrary navigate={navigate} />;
     crumbs = ["POSTER/AI", "BRAND LIBRARY"];
+  } else if (route.startsWith("/billing")) {
+    content = <Billing navigate={navigate} />;
+    crumbs = ["POSTER/AI", "BILLING"];
+  } else if (route.startsWith("/settings")) {
+    content = <Settings navigate={navigate} />;
+    crumbs = ["POSTER/AI", "SETTINGS"];
+  } else if (route.startsWith("/admin/clients")) {
+    content = <Clients navigate={navigate} />;
+    crumbs = ["POSTER/AI", "PROVIDER", "CLIENTS"];
   } else if (route.startsWith("/admin/usage")) {
     content = <AdminUsage navigate={navigate} />;
     crumbs = ["POSTER/AI", "ADMIN", "USAGE & BILLING"];

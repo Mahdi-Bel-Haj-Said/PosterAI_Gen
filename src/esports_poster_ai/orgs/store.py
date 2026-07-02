@@ -12,14 +12,18 @@ both ids, never the raw `_id`.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 from esports_poster_ai.billing import SubscriptionTier
 from esports_poster_ai.config import Settings, get_settings
 from esports_poster_ai.domain.org import Org, OrgRateLimits
+from esports_poster_ai.platforms import economics_for
 
 logger = logging.getLogger(__name__)
+
+# Length of a monthly grant window.
+_GRANT_PERIOD = timedelta(days=30)
 
 
 def _now() -> datetime:
@@ -77,13 +81,17 @@ class OrgStore:
         existing = self.get(platform_id, org_id)
         if existing is not None:
             return existing
+        effective_tier = tier or Org.model_fields["tier"].default
         org = Org(
             org_id=org_id,
             platform_id=platform_id,
             name=name,
-            tier=tier or Org.model_fields["tier"].default,
+            tier=effective_tier,
             limits=limits or OrgRateLimits(),
             metadata=metadata or {},
+            # Seed the first monthly Red Coins grant on creation.
+            coins_balance=economics_for(platform_id).grant_for(effective_tier),
+            coins_period_start=_now(),
         )
         self._col.insert_one(_to_doc(org))
         logger.info("org.registered", extra={"platform_id": platform_id, "org_id": org_id})
@@ -130,6 +138,10 @@ class OrgStore:
             {"_id": _doc_id(platform_id, org_id)}, {"_id": 1}
         ) is not None
 
+    def list_all(self, *, limit: int = 1000) -> List[Org]:
+        """Every org across platforms — used by the admin usage rollup."""
+        return [_from_doc(d) for d in self._col.find().limit(limit)]
+
     def list_for_platform(self, platform_id: str, *, limit: int = 200) -> List[Org]:
         cursor = (
             self._col.find({"platform_id": platform_id})
@@ -137,6 +149,92 @@ class OrgStore:
             .limit(limit)
         )
         return [_from_doc(d) for d in cursor]
+
+    # ---------------------------------------------------------------- coins
+    def ensure_monthly_grant(self, platform_id: str, org_id: str) -> Optional[Org]:
+        """
+        Credit any due monthly Red Coins grant(s) and return the fresh org.
+
+        Idempotent and safe to call on every balance read / charge:
+          * `coins_period_start is None`  -> first-ever grant (covers legacy orgs
+            created before coins existed): credit one grant, start the window now.
+          * window elapsed                -> credit one grant per whole period
+            that has passed and advance the window. Unused coins roll over.
+        """
+        org = self.get(platform_id, org_id)
+        if org is None:
+            return None
+
+        grant = economics_for(platform_id).grant_for(org.tier)
+        now = _now()
+
+        if org.coins_period_start is None:
+            self._col.update_one(
+                {"_id": _doc_id(platform_id, org_id)},
+                {"$set": {"coins_period_start": now, "updated_at": now},
+                 "$inc": {"coins_balance": grant}},
+            )
+            return self.get(platform_id, org_id)
+
+        elapsed = now - org.coins_period_start
+        periods = int(elapsed // _GRANT_PERIOD)
+        if periods >= 1 and grant > 0:
+            self._col.update_one(
+                {"_id": _doc_id(platform_id, org_id)},
+                {"$set": {"coins_period_start": org.coins_period_start + _GRANT_PERIOD * periods,
+                          "updated_at": now},
+                 "$inc": {"coins_balance": grant * periods}},
+            )
+            return self.get(platform_id, org_id)
+        return org
+
+    def charge_coins(self, platform_id: str, org_id: str, tokens: int) -> Tuple[bool, int]:
+        """
+        Atomically deduct `tokens` if the balance covers it.
+
+        Returns (charged, balance_after). `charged` is False (no change) when the
+        balance is insufficient — the caller decides what to do.
+        """
+        tokens = max(0, int(tokens))
+        if tokens == 0:
+            org = self.get(platform_id, org_id)
+            return True, (org.coins_balance if org else 0)
+        result = self._col.update_one(
+            {"_id": _doc_id(platform_id, org_id), "coins_balance": {"$gte": tokens}},
+            {"$inc": {"coins_balance": -tokens, "coins_spent": tokens}, "$set": {"updated_at": _now()}},
+        )
+        org = self.get(platform_id, org_id)
+        balance = org.coins_balance if org else 0
+        return (result.modified_count == 1), balance
+
+    def subscribe(self, platform_id: str, org_id: str, tier: SubscriptionTier) -> Org:
+        """
+        Switch the org to `tier` and start a fresh billing cycle: credit that
+        tier's monthly grant and reset the grant window to now. Creates the org
+        if it doesn't exist yet (which grants the tier amount once on creation).
+        """
+        grant = economics_for(platform_id).grant_for(tier)
+        now = _now()
+        res = self._col.update_one(
+            {"_id": _doc_id(platform_id, org_id)},
+            {"$set": {"tier": tier, "coins_period_start": now, "updated_at": now},
+             "$inc": {"coins_balance": grant}},
+        )
+        if res.matched_count == 0:
+            return self.register(platform_id=platform_id, org_id=org_id, tier=tier)
+        return self.get(platform_id, org_id)
+
+    def add_coins(self, platform_id: str, org_id: str, tokens: int) -> Optional[int]:
+        """Credit `tokens` (a top-up purchase). Returns the new balance, or None."""
+        tokens = max(0, int(tokens))
+        result = self._col.update_one(
+            {"_id": _doc_id(platform_id, org_id)},
+            {"$inc": {"coins_balance": tokens}, "$set": {"updated_at": _now()}},
+        )
+        if result.matched_count == 0:
+            return None
+        org = self.get(platform_id, org_id)
+        return org.coins_balance if org else None
 
     # ---------------------------------------------------------------- delete
     def delete(self, platform_id: str, org_id: str) -> bool:

@@ -13,15 +13,36 @@ In dev mode (no key) there is no platform — `platform_id` is null and
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel, Field
 
 from esports_poster_ai.api.deps import AuthContext, get_auth_context, get_org_store
+from esports_poster_ai.domain.platform import CLIENT_EDITABLE_BLOCKS, Platform
 from esports_poster_ai.orgs.store import OrgStore
+from esports_poster_ai.platforms import PlatformStore, platform_for
 
 router = APIRouter(prefix="/v1/me", tags=["me"])
+
+
+def _config_view(p: Platform) -> Dict[str, Any]:
+    """Client-facing config view — secrets masked, commercial fields read-only."""
+    data = p.model_dump()
+    byok = data.pop("byok", {}) or {}
+    return {
+        # Read-only (provider-owned) — shown so the client knows their plan.
+        "service_type": data.get("service_type"),
+        "monthly_fee_usd": data.get("monthly_fee_usd"),
+        # Editable client-owned blocks.
+        "economics": data.get("economics"),
+        "branding": data.get("branding"),
+        "features": data.get("features"),
+        "quotas": data.get("quotas"),
+        "tiers": data.get("tiers"),
+        # BYOK presence only, never the secret values.
+        "byok_set": {k: bool(v) for k, v in byok.items()},
+    }
 
 
 class MeResponse(BaseModel):
@@ -54,3 +75,26 @@ def get_me(
         org_count=org_count,
         generated_at=datetime.now(tz=timezone.utc),
     )
+
+
+@router.get("/config")
+def get_my_config(auth: AuthContext = Depends(get_auth_context)) -> Dict[str, Any]:
+    """The caller's own self-serve configuration (branding, features, economics,
+    tiers, quotas). Commercial fields are read-only; BYOK secrets are masked."""
+    rec = platform_for(auth.platform_id) or Platform(platform_id=auth.platform_id or "")
+    return _config_view(rec)
+
+
+@router.patch("/config")
+def update_my_config(
+    body: Dict[str, Any] = Body(...),
+    auth: AuthContext = Depends(get_auth_context),
+) -> Dict[str, Any]:
+    """
+    Update the caller's OWN config. Clients self-serve here with their API key.
+    Only client-owned blocks are accepted; service_type / monthly_fee_usd are
+    ignored (those are the provider's to set).
+    """
+    patch = {k: v for k, v in body.items() if k in CLIENT_EDITABLE_BLOCKS}
+    p = PlatformStore().patch_config(auth.platform_id, patch)
+    return _config_view(p)

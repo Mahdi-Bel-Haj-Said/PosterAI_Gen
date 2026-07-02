@@ -34,7 +34,13 @@
       }
       return;
     }
-    _push({ type, message: String(message || ""), ttl: opts.ttl, mono: !!opts.mono });
+    _push({
+      type,
+      message: String(message || ""),
+      ttl: opts.ttl,
+      mono: !!opts.mono,
+      onClick: typeof opts.onClick === "function" ? opts.onClick : null,
+    });
   };
 
   window.toast = {
@@ -75,13 +81,13 @@ function Toaster() {
   }, []);
 
   React.useEffect(() => {
-    const handler = ({ type, message, ttl, mono }) => {
+    const handler = ({ type, message, ttl, mono, onClick }) => {
       const cfg = _TOAST_STYLES[type] || _TOAST_STYLES.info;
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const effectiveTtl = typeof ttl === "number" ? ttl : cfg.ttl;
       setToasts((prev) => {
         // Newest on top; cap stack at 5 to avoid flooding the screen.
-        const next = [{ id, type, message, mono, cfg }, ...prev];
+        const next = [{ id, type, message, mono, cfg, onClick }, ...prev];
         return next.slice(0, 5);
       });
       if (effectiveTtl > 0) {
@@ -122,12 +128,13 @@ function Toaster() {
 
 
 function ToastCard({ toast, onDismiss }) {
-  const { cfg, message, mono, type } = toast;
+  const { cfg, message, mono, type, onClick } = toast;
+  const actionable = typeof onClick === "function";
   return (
     <div
       role={type === "error" ? "alert" : "status"}
-      onClick={onDismiss}
-      title="Click to dismiss"
+      onClick={() => { if (actionable) { try { onClick(); } catch (_) {} } onDismiss(); }}
+      title={actionable ? "Click to view" : "Click to dismiss"}
       style={{
         pointerEvents: "auto",
         display: "flex",
@@ -184,6 +191,11 @@ function ToastCard({ toast, onDismiss }) {
         >
           {message}
         </div>
+        {actionable && (
+          <div className="mono" style={{ fontSize: 10, letterSpacing: "0.1em", color: cfg.accent, marginTop: 4 }}>
+            VIEW →
+          </div>
+        )}
       </div>
       <button
         type="button"

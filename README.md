@@ -2,7 +2,75 @@
 
 An automated AI pipeline that generates professional esports posters for League of Legends and Valorant from a single JSON input — cinematic background, styled hero title, team logos, match details, atmospheric effects, and optional sponsor bar — all unified into a single image.
 
-The project ships as both a Python CLI **and** an HTTP API backed by an async job queue. A React web UI (`Poster-ai-frontend/`) drives the API end-to-end: wizard → upload → submit → live status → download. Multi-tenancy hooks (`org_id` scoping, `api_keys` table, `usage_events`) are in place; full enforcement and Defendr integration are next.
+The project ships as both a Python CLI **and** an HTTP API backed by an async job queue. A React web UI (`Poster-ai-frontend/`) drives the API end-to-end: wizard → upload → submit → live status → download — but the UI is only a reference console; the **product is the API**. The API is **multi-tenant**: it's integrated by *platforms* (the paying customers / clients), each owning many *orgs*. A single API key authenticates a platform; data is namespaced and isolated per platform, and completion can be delivered via signed **webhooks** or polling. Each org spends a token currency (**Red Coins**) per poster, and each client **self-serves its own configuration** (branding, pricing/economics, feature flags, plans, quotas) via `GET`/`PATCH /v1/me/config`. See *Authentication & multi-tenancy*, *Red Coins & per-client configuration* below, and `GUIDE.md` for the client integration walkthrough.
+
+---
+
+## Red Coins & per-client configuration (latest iteration)
+
+The biggest recent change turns the service into a configurable, multi-tenant SaaS
+where each client resells to their own orgs. Highlights:
+
+### Red Coins — the token economy (org billing)
+- Orgs spend **Red Coins** per poster; end users never see dollars. A poster costs
+  `tokens = base_cost_usd × quality_mult × poster_markup × tokens_per_usd`
+  (defaults: ×2 markup, 10,000 tokens/$ → a $0.05 poster = 1,000 coins).
+- **Charged on success only** — a failed poster costs nothing. Submit is blocked
+  with **HTTP 402** if the org's balance can't cover the estimate.
+- Subscription tiers **Free / Pro / Kratos** grant monthly coins (1,500 / 30,000 /
+  100,000 by default); orgs can also **top up** (fixed packs + a custom amount).
+- UI: a **Billing** page (plans + coin packs + a stub payment modal) and a topbar
+  balance pill. Endpoints: `GET /v1/coins`, `POST /v1/coins/purchase`,
+  `POST /v1/coins/subscribe`.
+
+### Per-client configuration (self-serve)
+Each **client (platform)** configures their own product — no code, no redeploy —
+and changes are isolated to that client:
+- **Branding** (coin name/symbol, product name, logo, accent colors),
+  **Features** (consistency / refine / sponsor bar / caption / social /
+  background-upload + allowed quality tiers), **Plans** (per-tier label + price to
+  orgs), **per-org Quotas**, and **Red Coins economics** (rate, markup, base cost,
+  top-up rate, grants). BYOK credential fields are stored (live pipeline wiring
+  deferred).
+- **Self-serve API**: `GET`/`PATCH /v1/me/config` (key-gated; commercial fields are
+  read-only). A **Settings** page edits the same blocks. Every billing/feature
+  decision resolves the caller's config via `platforms/economics.py`, so a client's
+  custom values take effect everywhere automatically.
+- The **provider** owns the commercial envelope — *service type* (`hosted` / `byok`)
+  and *monthly fee* — set on the **Clients** page (`GET /v1/admin/platforms`,
+  `POST /v1/admin/platforms/{id}`). The Usage & Billing page also shows per-org
+  Red Coins balance/used.
+
+### Generation quality + cost preview
+- User-selectable **quality** (`low` / `medium` / `high`) maps to the gpt-image-2
+  `quality` param and a cost multiplier (≈ ×0.25 / ×1 / ×4).
+- **`POST /v1/posters/estimate`** prices a poster (in the client's coins, with
+  affordability) **without generating** it — clients don't reimplement pricing.
+
+### Reliability & UX
+- **Rejected-background error** is now user-facing ("looks copyrighted — pick a
+  different background") instead of "empty text", with a **Change background &
+  retry** flow that keeps all wizard inputs.
+- **Prompt fidelity**: a verbatim *style footer* + a GPT-4o *system instruction*
+  push the chosen dominant color / vibe / energy onto the image (works in
+  consistency mode via the DNA palette).
+- **Sponsor bar**: the prompt reserves a clean, empty strip and the Pillow bar
+  height is **synced to the same orientation-based fraction** (landscape 5 % /
+  square 8 % / portrait 10 %) via `sponsors_layout.py`.
+- **Notifications**: a 2-second toast + a topbar bell center + a background job
+  watcher, so completion is announced (and clickable) from any page.
+- **Performance**: Style DNA list is one bulk call (`GET /v1/style-dnas`) +
+  parallel server-side loads + a short server cache; dashboard/history/brand-library
+  cache across navigation, and R2 responses now carry `Cache-Control` so images
+  don't re-download.
+- **Sponsor logos**: brand-library quick-pick + dedup; cleaner team-logo labels;
+  responsive result-page poster frame with a full-screen lightbox.
+
+### Tooling
+- `GUIDE.md` is a refreshed **client integration guide** (auth, generate→poll→
+  download, config, webhooks, errors, full endpoint reference).
+- `start.bat` / `start-all.ps1` — one double-click launches Docker (Redis + Mongo),
+  the API, the worker, and the frontend in their own windows.
 
 ---
 
@@ -31,7 +99,7 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 | Style DNA extraction from approved posters | working (hybrid: programmatic palette + GPT-4o semantic) |
 | 🟢 Style DNA `source_poster_url` signed for the UI | working |
 | CLI entry point | working |
-| Package layout, settings, retries, tests | working (190 unit tests passing) |
+| Package layout, settings, retries, tests | working (247 unit tests passing) |
 | Object storage abstraction (`Storage` protocol, `LocalStorage`, `R2Storage`) | working |
 | Cloudflare R2 integration | working (verified live against the bucket) |
 | Pipeline wired to storage — posters + Style DNA persisted to R2 | working |
@@ -65,7 +133,76 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 | 🟢 Static subscription tiers (Free / Pro / Enterprise) + `tier_for_org()` seam for the real billing integration | working |
 | 🟢 Toast notification system (`toast.jsx`) — global `window.toast.{error,success,info}`, replaces `alert()` calls | working |
 | 🟢 1–10 star poster rating UI (localStorage-backed, backend hook stubbed) | working |
+| 🟢 Red Coins token economy — per-org wallet, charge-on-success, 402 submit-gate, tiers (Free/Pro/Kratos) + monthly grants, fixed packs + custom top-up | working |
+| 🟢 Billing UI (plans + coin packs + custom amount + stub payment modal) + `GET /v1/coins`, `POST /v1/coins/purchase`, `POST /v1/coins/subscribe` | working (payment provider is a stub) |
+| 🟢 Per-client self-serve config — `GET`/`PATCH /v1/me/config` (branding, features, plans, quotas, economics) + Settings page | working |
+| 🟢 Per-client economics resolver (`platforms/economics.py`) wired into every billing path — each client's rate/markup/grants take effect everywhere | working |
+| 🟢 Provider Clients console — per-platform rollup (service type hosted/BYOK, fee, cost-to-serve, net, orgs) + `GET`/`POST /v1/admin/platforms` | working |
+| 🟢 Admin Usage & Billing — per-org Red Coins balance/used columns + totals | working |
+| 🟢 BYOK credential fields (OpenAI/R2/Gemini) stored per client | stored only — live pipeline wiring deferred |
+| 🟢 Quality selector (low/medium/high) → gpt-image-2 `quality` + cost multiplier; tiers gated by `allowed_qualities` | working |
+| 🟢 Cost preview — `POST /v1/posters/estimate` prices a poster (in the client's coins) without generating | working |
+| 🟢 User-facing rejected-background error (copyright) + "change background & retry" keeping all wizard inputs | working |
+| 🟢 Prompt fidelity — verbatim style footer + GPT-4o system instruction carry color/vibe/energy to the image (fresh + consistency) | working |
+| 🟢 Sponsor-bar reservation synced — prompt-reserved strip ↔ Pillow bar height share one orientation-based fraction (`sponsors_layout.py`) | working |
+| 🟢 Notifications — 2 s toast + topbar bell center + background job watcher (clickable to result) | working |
+| 🟢 Cross-navigation caching + stable signed URLs + R2 `Cache-Control` — dashboard/history/brand-library load once, images don't re-download | working |
+| 🟢 Faster Style DNA — one bulk `GET /v1/style-dnas` + parallel loads + short server cache | working |
+| 🟢 Sponsor-logo quick-pick + dedup; cleaner team-logo labels; responsive result frame + full-screen lightbox | working |
+| 🟢 Client integration guide (`GUIDE.md`) + one-click launcher (`start.bat` / `start-all.ps1`) | working |
 | Defendr integration | not started |
+
+---
+
+## SaaS architecture & client integration
+
+The HTTP API is built to be **sold to platforms** (the paying customers) and consumed from their apps with an API key. The tenancy model is **platform → org → tournament**:
+
+```
+Platform   the integrating customer — one API key authenticates it
+  └── Org          one of the platform's own customers/teams (registered via /v1/orgs)
+        └── Tournament   a series of posters that can share one Style DNA
+```
+
+A platform integrates **once** with a single key and generates posters on behalf of **all of its orgs**, passing `org_id` per request. The key carries a `platform_id` (not an org), and every object is namespaced under `…/platforms/{platform_id}/orgs/{org_id}/…` so two platforms can reuse the same `org_id` with zero collision — **isolation by construction**.
+
+### Integration lifecycle
+
+```
+1. (provider)  POST /v1/api-keys            → issue a key for a platform   (admin-only)
+2. (platform)  POST /v1/orgs                → register each org it serves
+3. (platform)  POST /v1/assets   (optional) → upload that org's logos
+4. (platform)  POST /v1/posters             → 202 {job_id}
+5. (platform)  GET  /v1/posters/{job_id}    → poll to "completed" + signed_url
+       …or receive a signed webhook (poster.completed) instead of polling
+6. (platform)  GET  /v1/posters/{job_id}/download → image bytes (storage-agnostic)
+```
+
+The key authenticates the platform; `org_id` must name an org registered under it; each org has **client-editable** rolling rate limits; completion can be **polled or pushed via signed webhooks**. Auth is gated by `API_KEY_REQUIRED` — `false` keeps the single-tenant localhost/dev flow unchanged, `true` enforces keys + isolation everywhere. Full detail in *Authentication & multi-tenancy* and the *Multi-tenancy* / *Outbound webhooks* / *Per-org rate limiting* sections.
+
+### For integrators
+
+- **`GUIDE.md`** — a self-contained, client-facing walkthrough (concepts, quick start, full poster-input schema, asset→logo mapping, editable limits, webhooks, error table). This is the doc to hand a client with their key.
+- **`client-integration-test.html`** — a standalone one-page test client (paste a key → register org → generate → poll → render) for validating the whole integration in a browser without a build step.
+
+### SaaS productization progress
+
+| Capability | Status |
+| --- | --- |
+| Per-platform API-key authentication (`Authorization: Bearer`, key → `platform_id`) | 🟢 done |
+| Tenant isolation (per-platform storage namespacing + row filtering + `assert_platform`) | 🟢 done |
+| Org registry + management (`/v1/orgs`: register / list / get / update / delete) | 🟢 done |
+| Client-editable per-org rate limits (rolling day/week/month on the org record) | 🟢 done |
+| Self-serve introspection (`/v1/me`, `/v1/orgs/{id}`, `/v1/usage`, `/v1/backgrounds`) | 🟢 done |
+| Async generation (queue + worker + durable job status) | 🟢 done |
+| Outbound webhooks (signed, retried, SSRF-guarded; gated by `WEBHOOKS_ENABLED`) | 🟢 done |
+| Client integration guide + browser test harness | 🟢 done |
+| Hosting + HTTPS + CORS allowlist (lock down `allow_origins=["*"]`) | ⚪ deployment step |
+| Client self-service console (register orgs / keys / webhooks from a UI) | ⚪ planned |
+| BYOK — clients supply their own model keys (seam: `clients/*_client.py`) | ⚪ planned |
+| Metered billing integration (today: out-of-band; seam: `tier_for_org()` / `org.tier`) | ⚪ planned |
+
+> Billing is intentionally **out-of-band** (negotiated per client; no in-app prices). The enforced control a platform actually tunes is each org's **rate limits**, edited via `/v1/orgs`. The Free/Pro/Enterprise `tier` field remains only as an optional internal label.
 
 ---
 
@@ -242,32 +379,49 @@ esports-poster-ai/
 |       |   |-- __main__.py              # `python -m esports_poster_ai.api` (uvicorn entry)
 |       |   |-- app.py                   # FastAPI() + CORS + /health
 |       |   |-- schemas.py               # request/response Pydantic models
-|       |   |-- deps.py                  # FastAPI dependencies (auth, stores)
+|       |   |-- deps.py                  # 🟢 auth context (Bearer key -> platform), admin, store deps
 |       |   `-- routes/
 |       |       |-- posters.py           # POST/GET /v1/posters (+ refine, caption, download)
 |       |       |-- assets.py            # POST/GET/DELETE /v1/assets
-|       |       |-- style_dnas.py        # full DNA lifecycle endpoints
-|       |       |-- api_keys.py          # admin: issue / list / revoke keys
-|       |       |-- usage.py             # GET /v1/usage + /v1/usage/quota
+|       |       |-- style_dnas.py        # full DNA lifecycle endpoints (+ org-wide list)
+|       |       |-- orgs.py              # 🟢 /v1/orgs — platform's org registry (+ editable limits)
+|       |       |-- me.py                # 🟢 GET /v1/me — platform identity
+|       |       |-- backgrounds.py       # 🟢 GET /v1/backgrounds — system background pool
+|       |       |-- webhooks.py          # 🟢 /v1/webhook — callback registry + test/replay
+|       |       |-- api_keys.py          # admin: issue / list / revoke keys (per platform)
+|       |       |-- usage.py             # GET /v1/usage + /v1/usage/quota + admin rollup
 |       |       |-- share.py             # 🟢 GET /p/{job_id} — public share landing page
 |       |       `-- social.py            # 🟢 GET/POST /v1/social/* — Postiz-backed native posting
 |       |
 |       |-- jobs/                        # async job pipeline
 |       |   |-- queue.py                 # RQ queue + enqueue_poster_job()
 |       |   |-- store.py                 # JobStore — MongoDB `jobs` collection
-|       |   `-- handlers.py              # process_job() — what the worker runs
+|       |   `-- handlers.py              # process_job() — runs the pipeline + emits webhooks
 |       |
 |       |-- assets/
 |       |   `-- store.py                 # AssetStore — MongoDB `assets` collection
 |       |
 |       |-- auth/
-|       |   `-- store.py                 # ApiKeyStore — hashed key lookup
+|       |   `-- store.py                 # ApiKeyStore — hashed key -> platform lookup
+|       |
+|       |-- orgs/                        # 🟢 org registry (orgs scoped under a platform)
+|       |   `-- store.py                 # OrgStore — MongoDB `orgs` collection (tier + limits)
+|       |
+|       |-- quotas/                      # 🟢 per-org rolling-window rate limiting
+|       |   `-- limiter.py               # compute_quotas / check_quota_or_raise + headers
+|       |
+|       |-- webhooks/                    # 🟢 outbound webhooks (push on job completion)
+|       |   |-- signing.py               # HMAC-SHA256 signature + SSRF-safe URL check
+|       |   |-- store.py                 # WebhookConfigStore + WebhookDeliveryStore
+|       |   `-- delivery.py              # emit_job_event / deliver_webhook (retries, dead-letter)
 |       |
 |       |-- domain/                      # Pydantic input + record models
 |       |   |-- inputs.py                # PosterInput with strict _meta literals
-|       |   |-- job.py                   # Job + JobStatus literals
-|       |   |-- asset.py                 # Asset record
-|       |   |-- api_key.py               # ApiKey record
+|       |   |-- job.py                   # Job + JobStatus literals (+ platform_id)
+|       |   |-- asset.py                 # Asset record (+ platform_id)
+|       |   |-- api_key.py               # ApiKey record (platform_id)
+|       |   |-- org.py                   # 🟢 Org record + OrgRateLimits
+|       |   |-- webhook.py               # 🟢 WebhookConfig + WebhookDelivery
 |       |   `-- style_dna.py
 |       |
 |       |-- clients/
@@ -315,7 +469,8 @@ esports-poster-ai/
 |       |
 |       `-- modes/
 |           |-- fresh.py                 # reads logos from local FS OR R2 storage keys
-|           `-- consistency.py
+|           |-- consistency.py
+|           `-- refine.py                # 🟢 image-edit pass over a parent poster
 |
 |-- Poster-ai-frontend/                  # React SPA (Babel-in-browser; no build step)
 |   |-- EsportsPostAI.html               # entry — sets window.API_BASE, loads bundles
@@ -496,10 +651,24 @@ API_PORT                     default: 8000
 MAX_ASSET_SIZE_MB            default: 10
 ADMIN_TOKEN                  required for admin endpoints; blank = admin endpoints refuse all requests
 API_KEY_REQUIRED             default: false. When true, every org-scoped endpoint requires a valid
-                             `Authorization: Bearer <api-key>` and pins org_id from the key. When
-                             false (dev), org_id may be passed directly and a key is optional (but
-                             still validated when present). Set true before exposing beyond localhost.
+                             `Authorization: Bearer <api-key>`; the PLATFORM is taken from the key,
+                             org_id is per-request and must be registered under it, and all data is
+                             namespaced + isolated per platform. When false (dev), org_id may be
+                             passed directly and a key is optional (but still validated when present).
+                             Set true before exposing beyond localhost.
 COST_PER_POSTER_USD          default: 0.054  (used by GET /v1/usage)
+
+QUOTA_DAY_DEFAULT            default: 3   ) per-org rolling-window quota defaults. Each org can
+QUOTA_WEEK_DEFAULT           default: 15  ) override these via POST/PATCH /v1/orgs (`limits`),
+QUOTA_MONTH_DEFAULT          default: 30  ) e.g. {"day":10,"week":50,"month":100}.
+
+WEBHOOKS_ENABLED             default: false. Master switch for outbound webhooks. False = the emit
+                             hook is a no-op and nothing about the pipeline changes.
+WEBHOOK_TIMEOUT_SECONDS      default: 5.0
+WEBHOOK_MAX_ATTEMPTS         default: 5    (delivery attempts before dead-letter)
+WEBHOOK_BACKOFF_BASE_SECONDS default: 10.0 (exponential: base * 2**(attempt-1))
+WEBHOOK_ALLOW_INSECURE_URLS  default: false. Dev-only: allow http:// + localhost/private callback
+                             URLs (e.g. to test against a local listener). Keep false in production.
 
 PUBLIC_BASE_URL              default: http://localhost:8000
                              public hostname embedded in /p/{job_id} OG/Twitter Card tags.
@@ -935,13 +1104,35 @@ Everything in this section was added in the most recent iteration on top of the 
 - **Draft persistence** — wizard form + current step persisted to `localStorage`; cleared on submit or discard.
 - **Tweaks panel** — runtime accent/density/bg-mood overrides via `app.jsx` CSS variables (carry-over from the design pass).
 
-### 🟢 Per-org rate limiting
+### 🟢 Per-org rate limiting (client-editable)
 
-- **Three rolling windows** enforced per `org_id`: **24 h / 7 d / 30 d**, defaulting to **3 / 15 / 30** completed posters. Defaults live in `config.Settings` (`rate_limit_day`, `rate_limit_week`, `rate_limit_month`); a single org can be overridden via a `rate_limits` document in the `orgs` Mongo collection without code changes.
-- **Counting:** rolling-window counts come straight from the existing `jobs` collection — every `mode` (fresh / consistency / refine) consumes one slot. No new "rate_limit_events" table; the billing trail *is* the rate-limit trail.
-- **Enforcement:** `POST /v1/posters` and `POST /v1/posters/{id}/refine` check the windows before enqueueing. On block they return **429 Too Many Requests** with a JSON body (`{detail, window, used, limit, reset_at}`), a `Retry-After: <seconds>` header, and full `X-RateLimit-{Limit,Remaining,Reset}` headers per window.
-- **Inspection:** `GET /v1/usage/quota?org_id={id}` returns the three windows with `{window, used, limit, remaining, reset_at}`. Every successful poster create / refine response also carries the same `X-RateLimit-*` headers so clients always see the current state.
-- **In the UI:** the wizard's Generate button surfaces the 429 inline (*"Rate limit reached — 3/3 posters in the last day. One slot frees up at \<datetime\>"*); the top nav bar shows live **D / W / M** chips with color states (green / yellow at ≤20 % remaining / red at full); the dashboard renders the same chips at full size with reset countdowns.
+- **Three rolling windows** enforced per `(platform, org)`: **24 h / 7 d / 30 d**. Service defaults (`QUOTA_DAY/WEEK/MONTH_DEFAULT`, default **3 / 15 / 30**) apply until the owning platform sets its own.
+- **The platform edits each org's limits** via `POST`/`PATCH /v1/orgs` — the `limits` object (`{day, week, month}`) lives on the org record (`domain/org.py:OrgRateLimits`). Any window left unset falls back to the service default, so a platform can raise just the daily cap (e.g. `{"day": 10}`) or set all three (`{"day":10,"week":50,"month":100}`). This replaced the old fixed-default + separate-collection scheme.
+- **Counting:** rolling-window counts come straight from the `jobs` collection, scoped by `platform_id` — every `mode` (fresh / consistency / refine) consumes one slot. The billing trail *is* the rate-limit trail.
+- **Enforcement:** `POST /v1/posters` and `POST /v1/posters/{id}/refine` check the windows (using the org's edited limits) before enqueueing. On block they return **429 Too Many Requests** with a JSON body (`{detail, window, used, limit, reset_at}`), a `Retry-After: <seconds>` header, and full `X-RateLimit-{Limit,Remaining,Reset}` headers per window.
+- **Inspection:** `GET /v1/usage/quota?org_id={id}` and `GET /v1/orgs/{id}` return the three windows with `{window, used, limit, remaining, reset_at}` reflecting that org's edited limits. Every successful poster create / refine response also carries the same `X-RateLimit-*` headers.
+- **In the UI:** the wizard's Generate button surfaces the 429 inline; the top nav bar and dashboard show live **D / W / M** chips with color states and reset countdowns.
+
+### 🟢 Multi-tenancy — platform → org → tournament
+
+The service is integrated by **platforms** (the paying customers), each owning **many orgs**. A single API key authenticates a platform; the request carries `org_id` per call.
+
+- **Identity:** an API key carries a `platform_id` (`auth/store.py`, issued via `POST /v1/api-keys`). `api/deps.py:get_auth_context` resolves the key → platform and exposes `require_org` / `require_org_registered` / `resolve_org_limits` / `assert_platform`.
+- **Org registry:** `orgs/store.py` + `domain/org.py` — orgs are keyed by `(platform, org)`, registered/managed through `/v1/orgs`, and carry their own `tier` (label) and `limits` (enforced quota).
+- **Isolation by construction:** `get_keys(platform_id=…)` namespaces every object under `…/platforms/{platform_id}/orgs/{org_id}/…`; Job/Asset rows carry `platform_id` and queries filter by it. Org ids are unique only within a platform, so two platforms can reuse the same id with no collision. `assert_platform` returns 404 on cross-platform access.
+- **Modes:** dev (`API_KEY_REQUIRED=false`) keeps the single-tenant localhost flow unchanged (`platform_id` is null, flat layout, no enforcement). Production (`true`) requires a key, registered orgs, and full isolation. See *Authentication & multi-tenancy*.
+- **Self-serve:** `GET /v1/me` (platform identity), `GET /v1/orgs/{id}` (tier + live quota), `GET /v1/backgrounds` (system pool), `GET /v1/style-dnas` (org-wide DNA list).
+- **Client integration guide:** `GUIDE.md` is a self-contained, client-facing walkthrough (concepts, quick start, full poster-input schema, asset→logo mapping, editable limits, webhooks, error table).
+
+### 🟢 Outbound webhooks
+
+Push instead of poll: a platform registers a callback URL and we POST a signed event when one of its posters finishes. **Gated by `WEBHOOKS_ENABLED` (default off)** — the emit hook in `jobs/handlers.py` is a wrapped no-op until turned on, so the existing pipeline is unchanged.
+
+- **Events:** `poster.completed`, `poster.failed` (+ a synthetic `ping`). Payload carries `job_id`, `org_id`, `tournament_id`, `status`, `storage_key`, a freshly-signed `signed_url`, and `caption`.
+- **Security:** HMAC-SHA256 signature in `X-EPAI-Signature: t=<ts>,v1=<hex>` (Stripe-style, replay-guarded via the timestamp); HTTPS-only callback URLs with an **SSRF guard** that rejects loopback/private/reserved hosts (`webhooks/signing.py`). `WEBHOOK_ALLOW_INSECURE_URLS` relaxes this for local testing.
+- **Reliability:** deliveries run on a **separate `epai-webhooks` RQ queue** (the poster worker is never blocked), with exponential-backoff retries up to `WEBHOOK_MAX_ATTEMPTS`, then **dead-letter**. A `webhook_deliveries` collection is the audit trail.
+- **Management (`/v1/webhook`, platform-authenticated):** `PUT` (set URL + events, secret shown once), `GET`, `POST /rotate-secret`, `POST /test` (synchronous ping, immediate feedback — no worker/Redis needed), `GET /deliveries`, `POST /deliveries/{id}/replay`, `DELETE`.
+- **Running it:** the existing `python -m esports_poster_ai.worker` already drains the webhook queue alongside posters — no extra process. Modules: `webhooks/{signing,store,delivery}.py`, `api/routes/webhooks.py`, `domain/webhook.py`.
 
 ### 🟢 Ops & tooling
 
