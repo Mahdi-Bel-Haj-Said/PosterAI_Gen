@@ -18,6 +18,7 @@ def build_consistency_block(style_dna: Optional[Dict[str, Any]]) -> str:
     particle_effects = style_dna.get("particle_effects")
     energy = style_dna.get("energy")
     sd_style_keywords = style_dna.get("sd_style_keywords")
+    typography = style_dna.get("typography")
 
     lines = [
         "CONSISTENCY MODE — STYLE DNA CONSTRAINTS:",
@@ -48,6 +49,13 @@ def build_consistency_block(style_dna: Optional[Dict[str, Any]]) -> str:
         )
     if energy:
         lines.append(f"Energy level: {energy}")
+    if typography:
+        lines.append(
+            f"Typography: {typography} — render the hero title and the tagline / "
+            "creative copy in THIS exact type style and finish. Do NOT vary the "
+            "fonts, letter shapes, or text effects; matching type is essential to "
+            "the series looking consistent."
+        )
     if sd_style_keywords:
         lines.append(f"Style keywords: {sd_style_keywords}")
 

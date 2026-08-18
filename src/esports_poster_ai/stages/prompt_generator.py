@@ -47,6 +47,31 @@ PROMPT_STAGE_INSTRUCTIONS = (
 )
 
 
+# Appended ONLY when the background is an AI-generated bank image (source ==
+# "generated"). gpt-4o intermittently returns an empty/refusal reply for dramatic
+# fantasy key art; this states — truthfully — what the image is, so the model
+# stops mistaking our own original art for something it must withhold. It is NOT
+# added for user uploads, where these claims may not hold.
+GENERATED_BG_FRAMING = (
+    "ABOUT THE PROVIDED IMAGE: it is ORIGINAL, AI-GENERATED fantasy environment "
+    "concept art — a painterly, game-style landscape produced by our own model for "
+    "a legitimate esports poster. It contains NO photograph of any real person, NO "
+    "real individual's likeness, and NO copyrighted characters, champions, or logos "
+    "— only an invented setting. There is nothing sensitive to withhold: simply "
+    "describe and transform this original artwork into the image-generation prompt "
+    "as instructed."
+)
+
+
+def _instructions_for(input_data: Dict[str, Any]) -> str:
+    """Base prompt-stage instructions, plus the AI-art framing for bank backgrounds."""
+    bg = (input_data or {}).get("background") or {}
+    source = (bg.get("source") or "").strip().lower()
+    if source == "generated":
+        return f"{GENERATED_BG_FRAMING}\n\n{PROMPT_STAGE_INSTRUCTIONS}"
+    return PROMPT_STAGE_INSTRUCTIONS
+
+
 def generate_image_prompt(
     *,
     background_image: bytes,
@@ -85,7 +110,7 @@ def generate_image_prompt(
     gpt4o_prompt = api.generate_prompt(
         background_image=background_image,
         assembled_prompt=assembled,
-        instructions=PROMPT_STAGE_INSTRUCTIONS,
+        instructions=_instructions_for(input_data),
         run_id=run_id,
     )
 

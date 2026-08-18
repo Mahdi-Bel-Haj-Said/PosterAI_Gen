@@ -114,6 +114,9 @@ class Design(_Loose):
     vibe: Optional[VibePreset] = None
     primary_color: Optional[str] = None
     energy: Optional[DesignEnergy] = None
+    # "dominant" → force primary_color across the poster (default).
+    # "auto"     → derive the palette from the background image instead.
+    color_mode: Optional[str] = None
 
 
 class PosterInput(_Loose):

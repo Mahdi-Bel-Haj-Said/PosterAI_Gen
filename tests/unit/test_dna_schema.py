@@ -39,6 +39,7 @@ def test_dna_to_prompt_dict_returns_consistency_block_shape():
         "particle_effects",
         "energy",
         "sd_style_keywords",
+        "typography",
     }
 
 

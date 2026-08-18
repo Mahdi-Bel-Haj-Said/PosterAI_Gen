@@ -84,6 +84,16 @@ def process_job(job_id: str) -> None:
     # platform → the historical flat layout.
     keys = get_keys(platform_id=job.platform_id)
 
+    # A bank background is delete-on-serve. Track what this job consumes so we can
+    # restore it if generation fails — otherwise a failed poster silently burns a
+    # bank image (see bank/serve.py).
+    from esports_poster_ai.bank.serve import (
+        begin_serve_scope,
+        commit_serve_scope,
+        rollback_serve_scope,
+    )
+
+    begin_serve_scope()
     try:
         if job.mode == "refine":
             result = run_refine(
@@ -115,16 +125,19 @@ def process_job(job_id: str) -> None:
             storage_key=result.storage_key,
             local_path=str(result.local_path),
         )
+        commit_serve_scope()  # success — the served bank image stays consumed
         _charge_coins(job)  # success only — failed posters are free
         _emit_webhook(store, job_id, "poster.completed")
     except UserFacingError as e:
         # Known, actionable failure (e.g. rejected background) — store the plain
         # message so the UI shows it verbatim, no exception-type prefix.
         logger.warning("job.failed_user_facing", extra={"job_id": job_id, "error": str(e)})
+        rollback_serve_scope()  # put the consumed bank background back
         store.mark_failed(job_id, error=str(e))
         _emit_webhook(store, job_id, "poster.failed")
     except Exception as e:  # noqa: BLE001 — any failure must land as a failed job
         logger.exception("job.failed", extra={"job_id": job_id})
+        rollback_serve_scope()  # put the consumed bank background back
         store.mark_failed(job_id, error=f"{type(e).__name__}: {e}")
         _emit_webhook(store, job_id, "poster.failed")
 

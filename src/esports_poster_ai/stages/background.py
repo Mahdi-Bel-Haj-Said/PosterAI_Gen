@@ -77,10 +77,11 @@ def select_background(
         )
         # fall through to defaults
 
-    # 2. AI-generated via Runpod (deferred — see _generate_with_runpod)
+    # 2. AI-generated: serve instantly from the pre-generated bank, falling back
+    #    to live RunPod generation on a bank miss (empty combo).
     if source == "generated":
         logger.info("background.requesting_generated")
-        return _generate_with_runpod(input_data or {}, settings=s)
+        return _serve_generated_background(input_data or {}, settings=s)
 
     # 3. System pool (current behavior)
     return _select_from_pool(backgrounds_dir or s.backgrounds_dir)
@@ -112,7 +113,29 @@ def _read_user_background(
         return None
 
 
-# ---------------------------------------------------------------- source 2: Runpod (stub)
+# ---------------------------------------------------------------- source 2: bank + live fallback
+def _serve_generated_background(input_data: Dict[str, Any], *, settings: Settings) -> bytes:
+    """
+    Serve an AI background: bank first (instant), live RunPod on a bank miss.
+
+    The bank ("pre-generated poster-background bank") holds ready backgrounds per
+    (energy, vibe) combo in R2 and hands them out delete-on-serve, so the common
+    path returns immediately with no model inference. An empty combo falls through
+    to live generation (rare, thanks to the ≤-threshold refill) — the "creating
+    your poster…" path.
+    """
+    from esports_poster_ai.bank.serve import try_serve_from_bank
+
+    data = try_serve_from_bank(input_data, settings=settings)
+    if data is not None:
+        logger.info("background.bank_hit")
+        return data
+
+    logger.info("background.bank_miss_live_fallback")
+    return _generate_with_runpod(input_data, settings=settings)
+
+
+# ---------------------------------------------------------------- source 2b: Runpod (live fallback)
 def _generate_with_runpod(input_data: Dict[str, Any], *, settings: Settings) -> bytes:
     """
     Generate a background with the fine-tuned Stable Diffusion model on Runpod.
@@ -138,16 +161,18 @@ def _generate_with_runpod(input_data: Dict[str, Any], *, settings: Settings) -> 
     Implementation lives here so the rest of the pipeline never changes —
     just the body of this function gets filled in.
     """
-    if not settings.runpod_api_key or not settings.runpod_endpoint_id:
-        raise RuntimeError(
-            "AI-generated background requires RUNPOD_API_KEY and "
-            "RUNPOD_ENDPOINT_ID to be set. Configure them in .env, then "
-            "implement the Runpod call in stages/background._generate_with_runpod."
-        )
-    # NOTE: when wired, replace this raise with the real Runpod call.
-    raise NotImplementedError(
-        "AI-generated backgrounds (fine-tuned SD via Runpod) are not implemented yet. "
-        "Use background.source='custom' (user upload) or omit it (system pool)."
+    from esports_poster_ai.clients.runpod_client import RunpodBackgroundGenerator
+    from esports_poster_ai.prompt.keyart import build_keyart_prompt
+
+    prompt = build_keyart_prompt(input_data)
+    logger.info(
+        "background.runpod_generate",
+        extra={"lora": prompt.lora, "seed": prompt.seed, "size": f"{prompt.width}x{prompt.height}"},
+    )
+    # Generous poll deadline: on a bank miss the endpoint may be cold, and loading
+    # the 20B model before the first image takes ~6 min. 15 min clears it safely.
+    return RunpodBackgroundGenerator(settings, poll_interval_s=5.0, timeout_s=900.0).generate(
+        prompt, seed=prompt.seed
     )
 
 

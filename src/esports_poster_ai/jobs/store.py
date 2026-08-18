@@ -379,6 +379,89 @@ class JobStore:
             {"$set": {"caption": caption, "updated_at": _now()}},
         )
 
+    def set_rating(self, job_id: str, rating: int) -> bool:
+        """
+        Persist the user's 1-5 satisfaction rating on the job. Returns True if a
+        job matched. The metrics dashboard reads these to compute avg rating per
+        vibe / energy / combo — the main signal for which choices produce posters
+        users actually like.
+        """
+        res = self._col.update_one(
+            {"_id": job_id},
+            {"$set": {"rating": int(rating), "updated_at": _now()}},
+        )
+        return getattr(res, "matched_count", 0) == 1
+
+    # ---------------------------------------------------------------- metrics
+    def content_metrics(self, *, platform_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Aggregate the design CHOICES users make (and how they rate the results)
+        across every job — the data behind the content-metrics dashboard.
+
+        Every poster stores its full request in `input_data`, so the distributions
+        of vibe / energy / combo / poster_type / quality / game / background source
+        / color mode are all derivable here with no extra capture. Ratings come
+        from the `rating` field (set via the rating endpoint).
+
+        Returns raw accumulators (counts + rating sums); the route layer turns
+        them into percentages + averages. One pass over the collection, reading
+        only the fields it needs, so it scales with history.
+        """
+        dims = ("vibe", "energy", "combo", "poster_type", "quality", "game",
+                "background_source", "color_mode")
+        counted: Dict[str, Dict[str, Dict[str, int]]] = {d: {} for d in dims}
+        ratings = {"count": 0, "sum": 0, "histogram": {str(i): 0 for i in range(1, 6)}}
+        total = 0
+
+        query: Dict[str, Any] = {}
+        if platform_id is not None:
+            query["platform_id"] = platform_id
+
+        def _bump(dim: str, key: Optional[str], rating: Optional[int]) -> None:
+            if not key:
+                return
+            slot = counted[dim].setdefault(key, {"count": 0, "rating_sum": 0, "rating_count": 0})
+            slot["count"] += 1
+            if isinstance(rating, int) and 1 <= rating <= 5:
+                slot["rating_sum"] += rating
+                slot["rating_count"] += 1
+
+        for doc in self._col.find(query, {"input_data": 1, "rating": 1, "_id": 0}):
+            total += 1
+            data = doc.get("input_data") or {}
+            meta = data.get("_meta") or {}
+            design = data.get("design") or {}
+            bg = data.get("background") or {}
+            rating = doc.get("rating")
+
+            if isinstance(rating, int) and 1 <= rating <= 5:
+                ratings["count"] += 1
+                ratings["sum"] += rating
+                ratings["histogram"][str(rating)] += 1
+
+            vibe = design.get("vibe")
+            energy = design.get("energy")
+            _bump("vibe", vibe, rating)
+            _bump("energy", energy, rating)
+            _bump("combo", f"{energy}_{vibe}" if (energy and vibe) else None, rating)
+            _bump("poster_type", meta.get("poster_type"), rating)
+            _bump("quality", meta.get("quality"), rating)
+            _bump("game", meta.get("game"), rating)
+            _bump("color_mode", design.get("color_mode"), rating)
+
+            # Background source: normalise to ai_generated / upload / none. Mirrors
+            # the resolution order in stages/background.py.
+            src = (bg.get("source") or "").strip().lower()
+            if src == "generated":
+                bg_key = "ai_generated"
+            elif src == "custom" or bg.get("image_path"):
+                bg_key = "upload"
+            else:
+                bg_key = "none"
+            _bump("background_source", bg_key, rating)
+
+        return {"total_jobs": total, "counted": counted, "ratings": ratings}
+
     def mark_failed(self, job_id: str, error: str) -> None:
         self._col.update_one(
             {"_id": job_id},

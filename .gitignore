@@ -28,6 +28,12 @@ htmlcov/
 outputs/
 scratch/
 
+# Local export of the pre-generated background bank (~3MB per image, 277MB+).
+# Same reasoning as above: these are model output, regenerable from the bank
+# pipeline, and R2 holds the authoritative copy. Committing them would put a
+# permanent ~300MB in git history for files that are not source.
+bank_export/
+
 # IDEs
 .vscode/
 .idea/

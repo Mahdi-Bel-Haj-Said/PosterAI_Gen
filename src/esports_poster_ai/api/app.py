@@ -22,6 +22,7 @@ from esports_poster_ai.api.routes.posters import router as posters_router
 from esports_poster_ai.api.routes.share import router as share_router
 from esports_poster_ai.api.routes.social import router as social_router
 from esports_poster_ai.api.routes.style_dnas import router as style_dnas_router
+from esports_poster_ai.api.routes.taglines import router as taglines_router
 from esports_poster_ai.api.routes.usage import admin_router as admin_usage_router
 from esports_poster_ai.api.routes.usage import router as usage_router
 from esports_poster_ai.api.routes.webhooks import router as webhooks_router
@@ -59,6 +60,7 @@ app.include_router(orgs_router)
 app.include_router(backgrounds_router)
 app.include_router(webhooks_router)
 app.include_router(coins_router)
+app.include_router(taglines_router)
 
 
 def _mongodb_ok() -> bool:

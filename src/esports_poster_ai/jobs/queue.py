@@ -22,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 QUEUE_NAME = "poster-ai"
 JOB_HANDLER = "esports_poster_ai.jobs.handlers.process_job"
-JOB_TIMEOUT_SECONDS = 900  # generous: a poster is 20-60s, plus retries
+JOB_TIMEOUT_SECONDS = 900  # max RUN time once a worker starts it (cold live-bg + edit)
+# Max time a job may sit QUEUED (no worker) before RQ discards it. Guards against
+# jobs stranded forever when the worker is down; the frontend also times out the
+# UI so the user is never stuck on a silent "queued" screen.
+JOB_QUEUE_TTL_SECONDS = 1800
 
 
 def get_redis(settings: Optional[Settings] = None) -> Any:
@@ -70,7 +74,12 @@ def enqueue_poster_job(
     # push fails, the job would otherwise be stranded in `queued` forever with
     # no worker ever picking it up — so mark it failed and surface the error.
     try:
-        get_queue(s).enqueue(JOB_HANDLER, job.job_id, job_timeout=JOB_TIMEOUT_SECONDS)
+        get_queue(s).enqueue(
+            JOB_HANDLER,
+            job.job_id,
+            job_timeout=JOB_TIMEOUT_SECONDS,
+            ttl=JOB_QUEUE_TTL_SECONDS,
+        )
     except Exception as e:  # noqa: BLE001 — any push failure must un-strand the job
         store.mark_failed(job.job_id, error=f"enqueue failed: {type(e).__name__}: {e}")
         logger.error("job.enqueue_failed", extra={"job_id": job.job_id, "error": str(e)})

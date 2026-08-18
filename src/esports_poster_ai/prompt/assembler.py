@@ -14,10 +14,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from esports_poster_ai.prompt.blocks.assets import build_asset_block
 from esports_poster_ai.prompt.blocks.consistency import build_consistency_block
-from esports_poster_ai.prompt.blocks.design import build_design_block
+from esports_poster_ai.prompt.blocks.design import build_design_block, resolve_color_mode
+from esports_poster_ai.prompt.blocks.game_logo import build_game_logo_block
 from esports_poster_ai.prompt.blocks.game_rules import build_game_rules_block
 from esports_poster_ai.prompt.blocks.poster_type import POSTER_TYPE_BLOCKS
 from esports_poster_ai.prompt.blocks.sponsors import build_sponsor_block
+from esports_poster_ai.prompt.blocks.typography import build_typography_block
 from esports_poster_ai.prompt.blocks.static import (
     BACKGROUND_ANALYSIS_BLOCK,
     FACTUAL_TEXT_BLOCK,
@@ -223,6 +225,35 @@ def _roster_reveal_meta(input_data: Dict[str, Any]) -> List[str]:
                 "empty rather than substituting another player's face."
             )
 
+        # Players without a provided photo must NOT get an invented face — the #1
+        # roster failure is the model fabricating realistic headshots to fill empty
+        # cards. Call them out explicitly and forbid it.
+        valid_players = [
+            p for p in players
+            if isinstance(p, dict)
+            and (_is_non_empty_str(p.get("ign")) or _is_non_empty_str(p.get("role")))
+        ]
+        no_photo = [
+            (p.get("ign") or "a player")
+            for p in valid_players
+            if not _is_non_empty_str(p.get("image_path"))
+        ]
+        if no_photo:
+            who = (
+                "EVERY player"
+                if len(no_photo) == len(valid_players)
+                else "these players: " + ", ".join(no_photo)
+            )
+            lines.append(
+                f"- NO-PHOTO PLAYERS — CRITICAL: {who} have NO photo supplied. Render "
+                "each such player's card with the IGN + role as TEXT ONLY and NO "
+                "portrait — at most a neutral, faceless silhouette or a monogram / "
+                "initial placeholder in the photo area. Do NOT invent, generate, "
+                "imagine, or hallucinate any human face, headshot, or player likeness "
+                "for a player without a provided photo. A fabricated face is a hard "
+                "failure — an empty/text-only card is correct."
+            )
+
     return lines
 
 
@@ -321,6 +352,16 @@ colors and mood wherever they conflict with the directives above:
 - These are deliberate creative directions from the user. Do NOT fall back to
   the source background's original palette or mood because it looks safer."""
 
+# Auto color mode: keep the background's own palette instead of forcing a hue.
+_IMAGE_STYLE_RULES_AUTO = """\
+STYLE RULES — apply to the WHOLE poster:
+- Build the palette FROM the background image's own dominant colors: sample them
+  and reuse them for the title, accents, glow, and overlays so the design feels
+  unified with the background. Do NOT impose an external or single forced color,
+  and do NOT re-tint the whole frame to a hue the background does not already have.
+- Treat the vibe and energy above as the overall mood and composition density of
+  the poster, not a minor accent."""
+
 
 def _style_directive_lines(
     input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]] = None
@@ -351,7 +392,12 @@ def _style_directive_lines(
     lines = []
     if _is_non_empty_str(design.get("vibe")):
         lines.append(f"- Vibe: {design.get('vibe')}")
-    if _is_non_empty_str(design.get("primary_color")):
+    if resolve_color_mode(design) == "auto":
+        lines.append(
+            "- Color: use the BACKGROUND image's own dominant colors as the poster's "
+            "palette; do not force an external color"
+        )
+    elif _is_non_empty_str(design.get("primary_color")):
         lines.append(
             f"- Dominant color (make this the primary color of the WHOLE poster): "
             f"{design.get('primary_color')}"
@@ -381,10 +427,15 @@ def build_image_style_footer(
     if not lines:
         return ""
     body = "\n".join(lines)
+    # Fresh mode with auto color → keep the background's palette; otherwise (or in
+    # DNA mode) use the color-grade-to-dominant rules.
+    design = input_data.get("design") if isinstance(input_data, dict) else None
+    auto = not (isinstance(style_dna, dict) and style_dna) and resolve_color_mode(design) == "auto"
+    rules = _IMAGE_STYLE_RULES_AUTO if auto else _IMAGE_STYLE_RULES
     return (
         "=== VISUAL STYLE — APPLY ACROSS THE WHOLE POSTER ===\n\n"
         f"{body}\n\n"
-        f"{_IMAGE_STYLE_RULES}"
+        f"{rules}"
     )
 
 
@@ -433,6 +484,18 @@ def build_prompt(input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]]
         style_block = build_design_block(input_data.get("design"))
     if style_block:
         parts.append(style_block)
+
+    # Official game logo: the vision model picks where the (reference-supplied)
+    # game wordmark goes, based on the background.
+    game_logo_block = build_game_logo_block(input_data)
+    if game_logo_block:
+        parts.append(game_logo_block)
+
+    # Per-poster typography variety — FRESH mode only. In consistency mode the
+    # Style DNA already carries the saved typography (see build_consistency_block),
+    # so randomizing here would break the "keep the same look" guarantee.
+    if not decisions.get("style_dna"):
+        parts.append(build_typography_block(input_data))
 
     # Reserve a clean strip for the sponsor bar (composited post-generation).
     sponsor_block = build_sponsor_block(input_data)

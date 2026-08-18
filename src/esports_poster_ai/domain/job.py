@@ -61,6 +61,11 @@ class Job(BaseModel):
     # POST /v1/posters/{job_id}/caption and reused thereafter.
     caption: Optional[str] = None
 
+    # User's 1-5 satisfaction rating of the finished poster (None = unrated).
+    # Set via POST /v1/posters/{job_id}/rating and aggregated by the content
+    # metrics dashboard (avg rating per vibe / energy / combo).
+    rating: Optional[int] = None
+
     # Failure detail.
     error: Optional[str] = None
     attempts: int = 0

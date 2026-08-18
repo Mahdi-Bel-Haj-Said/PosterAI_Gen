@@ -128,7 +128,9 @@ HERO TITLE:
 - Must be the single largest text element on the entire poster — larger than
   team names, player names, tournament name, and all other text
 - Position: [best empty zone identified in Step 1]
-- Font: ultra-bold, wide/expanded, all-caps
+- Font: a bold display typeface — its exact SHAPE and FINISH vary per poster and
+  are specified in the TYPOGRAPHY DIRECTION block near the end. Do NOT default to
+  the same chunky wide metallic block every time.
 - MANDATORY text integration into the scene — all of the following apply.
   This heavy integration is for the HERO TITLE ONLY; factual text (scores,
   team names, dates, tournament) is kept clean and legible — see the
@@ -196,11 +198,12 @@ TYPOGRAPHY SYSTEM — TWO TIERS of text, treated very differently:
 
 TIER 1 — STYLIZED TEXT (hero title, and creative copy: hype / result / reveal
 phrase). This text is a visual centerpiece:
-- Hero title: ultra-bold, wide, all-caps; the single largest text element;
-  fully integrated into the scene per the HERO TITLE rules above (particles,
-  texture, light wrap, chromatic aberration).
-- Creative copy: italic or condensed, matching scene energy, clearly
-  differentiated from the factual text.
+- Hero title: a bold display face — its typeface + finish are set by the
+  TYPOGRAPHY DIRECTION block (vary it per poster, don't reuse the same look); the
+  single largest text element; fully integrated into the scene per the HERO TITLE
+  rules above (particles, texture, light wrap, chromatic aberration).
+- Creative copy: styled per the TYPOGRAPHY DIRECTION block, clearly differentiated
+  from BOTH the hero title and the factual text.
 
 TIER 2 — FACTUAL TEXT (team names, series score, date, time, format,
 tournament name, phase, stream info, player IGNs). This text carries the

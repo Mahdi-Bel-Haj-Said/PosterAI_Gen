@@ -54,6 +54,7 @@ class JobResponse(BaseModel):
     storage_key: Optional[str] = None
     signed_url: Optional[str] = None
     caption: Optional[str] = None
+    rating: Optional[int] = None
     error: Optional[str] = None
 
     @classmethod
@@ -70,6 +71,7 @@ class JobResponse(BaseModel):
             storage_key=job.storage_key,
             signed_url=signed_url,
             caption=getattr(job, "caption", None),
+            rating=getattr(job, "rating", None),
             error=job.error,
         )
 

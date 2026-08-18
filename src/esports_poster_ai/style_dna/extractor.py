@@ -102,6 +102,7 @@ def extract_style_dna(
         particle_effects=semantic.particle_effects,
         energy=semantic.energy,
         sd_style_keywords=semantic.sd_style_keywords,
+        typography=semantic.typography,
     )
 
     logger.info(

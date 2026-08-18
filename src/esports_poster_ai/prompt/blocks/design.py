@@ -39,6 +39,23 @@ _ENERGY_GUIDANCE = {
 }
 
 
+def resolve_color_mode(design: Optional[Dict[str, Any]]) -> str:
+    """
+    Return the effective color mode: "dominant" or "auto".
+
+    - Explicit `design.color_mode` wins ("dominant" | "auto").
+    - Otherwise back-compat: a set `primary_color` implies "dominant"; nothing
+      set implies "auto" (let the poster take the background's own colors).
+    """
+    if not isinstance(design, dict):
+        return "auto"
+    mode = (design.get("color_mode") or "").strip().lower()
+    if mode in ("dominant", "auto"):
+        return mode
+    color = design.get("primary_color")
+    return "dominant" if isinstance(color, str) and color.strip() else "auto"
+
+
 def build_design_block(design: Optional[Dict[str, Any]]) -> str:
     """
     Render the VISUAL STYLE block from the input's `design` object.
@@ -58,12 +75,19 @@ def build_design_block(design: Optional[Dict[str, Any]]) -> str:
     if isinstance(vibe, str) and vibe.strip():
         lines.append(f"- Vibe: {_VIBE_GUIDANCE.get(vibe, vibe)}")
 
-    color = design.get("primary_color")
-    if isinstance(color, str) and color.strip():
+    if resolve_color_mode(design) == "auto":
         lines.append(
-            f"- Dominant color: {color} — make this the primary color of the poster, "
-            f"or a close variation of it. Build the palette around it."
+            "- Color: DERIVE the poster's palette from the BACKGROUND image — build the "
+            "design around the background's own dominant colors. Do NOT impose an "
+            "external or single forced color."
         )
+    else:
+        color = design.get("primary_color")
+        if isinstance(color, str) and color.strip():
+            lines.append(
+                f"- Dominant color: {color} — make this the primary color of the poster, "
+                f"or a close variation of it. Build the palette around it."
+            )
 
     energy = design.get("energy")
     if isinstance(energy, str) and energy.strip():
@@ -74,4 +98,4 @@ def build_design_block(design: Optional[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["build_design_block"]
+__all__ = ["build_design_block", "resolve_color_mode"]

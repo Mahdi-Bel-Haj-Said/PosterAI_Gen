@@ -48,6 +48,7 @@ class StyleDNASemantic(BaseModel):
     particle_effects: str
     energy: Energy
     sd_style_keywords: str
+    typography: str
 
     model_config = ConfigDict(extra="ignore")
 
@@ -78,6 +79,9 @@ class StyleDNA(BaseModel):
     particle_effects: str = ""
     energy: Energy = "balanced"
     sd_style_keywords: str = ""
+    # Text style: hero-title typeface + finish/effect, and creative-copy style.
+    # Default "" for DNAs saved before typography capture existed.
+    typography: str = ""
 
     model_config = ConfigDict(extra="allow")
 
@@ -94,6 +98,7 @@ class StyleDNA(BaseModel):
             "particle_effects": self.particle_effects,
             "energy": self.energy,
             "sd_style_keywords": self.sd_style_keywords,
+            "typography": self.typography,
         }
 
     def approve(self) -> "StyleDNA":

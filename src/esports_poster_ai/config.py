@@ -34,10 +34,99 @@ class Settings(BaseSettings):
         default="gpt-image-2",
         description="Model used in the poster-generation stage.",
     )
+    openai_prompt_builder_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Small, cheap text model for key-art background prompt enrichment / "
+            "generation (keyart_builder balanced/premium tiers). ~$0.001 per call."
+        ),
+    )
 
     # RunPod (reserved for the deferred SD background stage)
     runpod_api_key: str = Field(default="")
     runpod_endpoint_id: str = Field(default="")
+
+    # Pre-generated background bank (R2). Backgrounds are generated offline in
+    # batches and served instantly (delete-on-serve); a refill tops the bank back
+    # up when any combo runs low. See the `esports_poster_ai.bank` package.
+    bg_bank_prefix: str = Field(
+        default="Bg_bank_lol",
+        description=(
+            "Top-level R2 folder holding the pre-generated background bank. "
+            "LoL-specific (the LoRA is LoL-trained); a Valorant bank would use its own."
+        ),
+    )
+    bg_bank_target_per_combo: int = Field(
+        default=6,
+        description="Desired number of ready backgrounds per (energy, vibe) combo.",
+    )
+    bg_bank_refill_threshold: int = Field(
+        default=2,
+        description=(
+            "When any combo drops to <= this many remaining, one refill job tops "
+            "every combo back up to the target."
+        ),
+    )
+    bg_bank_image_size: int = Field(
+        default=1536,
+        description=(
+            "Square edge (px) of each bank background render. 1536 is the target "
+            "(sharper than 1024); confirm the serverless worker's GPU has the VRAM "
+            "for it with one test image before a full fill — drop to 1024 if it OOMs."
+        ),
+    )
+    bg_bank_steps: int = Field(default=30, description="Diffusion steps for bank renders.")
+    bg_bank_guidance: float = Field(default=5.0, description="CFG guidance for bank renders.")
+    bg_bank_refill_lock_ttl_seconds: int = Field(
+        default=1800,
+        description="Safety TTL on the refill lock (auto-releases if a refill crashes).",
+    )
+    bg_bank_fill_concurrency: int = Field(
+        default=3,
+        description=(
+            "How many generation jobs to keep in RunPod's queue at once during a "
+            "fill. Keeping the queue non-empty stops the serverless worker from "
+            "scaling to zero between images (which would cold-reload the 20B model "
+            "each time). Requires the endpoint's Max Workers = 1 so extra queued "
+            "jobs don't spin up additional (cold-starting) workers."
+        ),
+    )
+    bg_bank_auto_refill_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for the automatic bank refill. When a served combo "
+            "drops to <= the threshold, a refill is spawned as a DETACHED process "
+            "(so it never blocks poster generation on the job worker). Set false "
+            "to disable auto-refill entirely — e.g. while testing, or when you fill "
+            "the bank manually with `bank.seed --fill`."
+        ),
+    )
+    bg_bank_job_max_wait_seconds: int = Field(
+        default=3600,
+        description=(
+            "How long the durable refill waits for ONE background job (queued on "
+            "RunPod, waiting for a free GPU) before it cancels and RETRIES it. The "
+            "refill never skips — it retries until the bank is filled — so this just "
+            "bounds how long a single attempt waits before a fresh one is submitted."
+        ),
+    )
+    bg_bank_job_ttl_ms: int = Field(
+        default=3600000,
+        description=(
+            "RunPod job execution-policy TTL (ms): how long RunPod keeps a submitted "
+            "job QUEUED waiting for a GPU before dropping it. Set generous so jobs "
+            "survive a GPU shortage; if RunPod drops one, the durable refill resubmits."
+        ),
+    )
+
+    # Official game-logo overlay. When on, an LoL poster gets the official
+    # League of Legends wordmark supplied to the pipeline as a reference image,
+    # and the vision model is told to place it based on the background — so a
+    # viewer instantly knows the game. Set false to disable the overlay.
+    brand_logo_enabled: bool = Field(
+        default=True,
+        description="Add the official game logo (LoL wordmark) as a reference + placement instruction.",
+    )
 
     # Cloudflare R2 (S3-compatible object storage)
     r2_access_key_id: str = Field(default="", description="R2 API token Access Key ID.")
@@ -196,6 +285,9 @@ class Settings(BaseSettings):
     backgrounds_dir: Path = PROJECT_ROOT / "backgrounds"
     outputs_dir: Path = PROJECT_ROOT / "outputs"
     styles_dir: Path = PROJECT_ROOT / "styles"
+    # Real training captions used as RAG exemplars for the premium prompt tier
+    # (keyart_builder.load_caption_store). Missing dir -> premium falls back.
+    keyart_captions_dir: Path = PROJECT_ROOT / "Prompts"
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),

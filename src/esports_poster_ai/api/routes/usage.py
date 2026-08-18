@@ -432,6 +432,86 @@ def admin_platforms(store: JobStore = Depends(get_job_store)) -> PlatformsRespon
     return PlatformsResponse(platforms=out, generated_at=datetime.now(tz=timezone.utc))
 
 
+class MetricBucket(BaseModel):
+    """One value of a dimension (e.g. vibe='cyberpunk') with its share + rating."""
+    key: str
+    count: int
+    pct: float = Field(..., ge=0.0, le=100.0)         # share within its dimension
+    rated: int = 0                                     # how many of these were rated
+    avg_rating: Optional[float] = None                 # mean 1–5 rating, if any
+
+
+class ContentMetricsResponse(BaseModel):
+    """
+    Everything the content-metrics dashboard needs in one call: the distribution
+    of user design choices + how each is rated. Percentages within a dimension
+    sum to ~100 across the jobs that specified that dimension.
+    """
+    total_jobs: int
+    ratings_count: int
+    avg_rating: Optional[float] = None
+    rating_histogram: Dict[str, int]                   # {"1":n, … "5":n}
+
+    by_vibe: List[MetricBucket]
+    by_energy: List[MetricBucket]
+    by_combo: List[MetricBucket]
+    by_poster_type: List[MetricBucket]
+    by_quality: List[MetricBucket]
+    by_game: List[MetricBucket]
+    by_background_source: List[MetricBucket]
+    by_color_mode: List[MetricBucket]
+
+    generated_at: datetime
+
+
+def _buckets(dim: Dict[str, Dict[str, int]]) -> List[MetricBucket]:
+    """Turn a raw {key: {count, rating_sum, rating_count}} map into sorted buckets."""
+    total = sum(v["count"] for v in dim.values()) or 1
+    out = [
+        MetricBucket(
+            key=key,
+            count=v["count"],
+            pct=round(100.0 * v["count"] / total, 1),
+            rated=v["rating_count"],
+            avg_rating=round(v["rating_sum"] / v["rating_count"], 2) if v["rating_count"] else None,
+        )
+        for key, v in dim.items()
+    ]
+    out.sort(key=lambda b: b.count, reverse=True)
+    return out
+
+
+@admin_router.get("/metrics", response_model=ContentMetricsResponse)
+def admin_content_metrics(store: JobStore = Depends(get_job_store)) -> ContentMetricsResponse:
+    """
+    Content analytics for the metrics dashboard: which vibes / energies / combos /
+    poster types / qualities / games users pick, the AI-generated vs upload split,
+    color-mode usage, and average satisfaction ratings per choice.
+
+    Sourced from the durable `jobs` collection (every poster stores its full input)
+    plus the `rating` field — no separate events table needed. Ungated like the
+    sibling admin endpoints; add ``Depends(require_admin)`` to lock it down later.
+    """
+    m = store.content_metrics()
+    counted = m["counted"]
+    r = m["ratings"]
+    return ContentMetricsResponse(
+        total_jobs=m["total_jobs"],
+        ratings_count=r["count"],
+        avg_rating=round(r["sum"] / r["count"], 2) if r["count"] else None,
+        rating_histogram=r["histogram"],
+        by_vibe=_buckets(counted["vibe"]),
+        by_energy=_buckets(counted["energy"]),
+        by_combo=_buckets(counted["combo"]),
+        by_poster_type=_buckets(counted["poster_type"]),
+        by_quality=_buckets(counted["quality"]),
+        by_game=_buckets(counted["game"]),
+        by_background_source=_buckets(counted["background_source"]),
+        by_color_mode=_buckets(counted["color_mode"]),
+        generated_at=datetime.now(tz=timezone.utc),
+    )
+
+
 class SetPlatformRequest(BaseModel):
     name: Optional[str] = None
     service_type: Optional[ServiceType] = None

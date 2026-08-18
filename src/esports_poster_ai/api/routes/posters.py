@@ -368,6 +368,38 @@ def generate_caption(
     return _job_to_response(fresh, get_storage())
 
 
+class RatePosterRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5, description="User satisfaction rating, 1–5.")
+
+
+@router.post("/{job_id}/rating", response_model=JobResponse)
+def rate_poster(
+    job_id: str,
+    req: RatePosterRequest,
+    store: JobStore = Depends(get_job_store),
+    auth: AuthContext = Depends(get_auth_context),
+) -> JobResponse:
+    """
+    Record the user's 1–5 rating of a completed poster.
+
+    Feeds the content-metrics dashboard (avg rating per vibe / energy / combo),
+    which is how we learn which design choices produce posters users actually
+    like. Idempotent — re-rating overwrites the previous value.
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    auth.assert_platform(job.platform_id)
+    if job.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job {job_id} is not a completed poster (status={job.status}); only completed posters can be rated.",
+        )
+    store.set_rating(job_id, req.rating)
+    fresh = store.get(job_id) or job
+    return _job_to_response(fresh, get_storage())
+
+
 @router.get("", response_model=JobListResponse)
 def list_posters(
     org_id: Optional[str] = Query(

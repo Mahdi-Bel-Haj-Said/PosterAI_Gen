@@ -41,6 +41,13 @@ What you SHOULD describe in one short sentence each:
 - `atmosphere`: overall mood and atmosphere of the scene
 - `particle_effects`: particle / energy / smoke / spark effects, or "none" if absent
 - `energy`: one of "chill" | "balanced" | "intense" | "explosive"
+- `typography`: the TEXT STYLE, so the same fonts/effects can be reused. Describe
+  (a) the HERO / main TITLE's typeface SHAPE (e.g. ultra-bold wide sans, tall
+  condensed sans, chiseled slab-serif, elegant high-contrast serif, stencil,
+  art-deco) AND its finish/material/effect (e.g. polished chrome, brushed gold,
+  cracked stone, molten/neon glow, embossed relief, glossy), and (b) the
+  sub-tagline / creative-copy style (e.g. handwritten brush script, italic sans,
+  tracked-out thin caps). Describe the LOOK ONLY — never quote the words.
 - `sd_style_keywords`: 4-8 comma-separated style tags suitable for a Stable
   Diffusion prompt (e.g. "cyberpunk arena, neon orange purple, dark dramatic,
   high contrast"). Style only — never content.

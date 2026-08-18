@@ -4,43 +4,47 @@ Key-art (background) prompt assembler — for the fine-tuned Qwen-Image LoRAs.
 This is the prompt builder for the BACKGROUND layer, and it is deliberately
 NOT a scaled-down version of the GPT-4o poster assembler (`assembler.py`).
 The #1 rule of LoRA inference is: prompt in the same distribution you trained
-in. So this module reproduces the EXACT grammar of the real training captions
-(see the samples under `train.md` / the caption dataset):
+in. So this module reproduces the training-caption grammar:
 
     <trigger>, <scene>, <c1> and <c2> palette, <m1> and <m2> mood,
     cinematic esports key art, highly detailed, <vibe>, <energy>
 
-Ground-truth facts extracted from the real captions (these override the
-simplified pattern sketched in train.md §5):
+ENVIRONMENT-FIRST (refined post-V1 decision)
+--------------------------------------------
+V1 was trained on character-heavy splash art and learned to generate plausible
+but *non-canonical* champions (fake Yasuo/Zed faces) as the dominant subject. For
+a composited poster — where the real hero/player is added downstream and the
+background must leave clean regions for overlays — a *dominant* wrong character
+looks worse than none. So the product direction is **environment-first
+backgrounds**: Runeterra-style settings, atmosphere, and lighting, where
+incidental world life (a distant dragon/drake, a poro, minions, far-off soldiers,
+circling birds) is welcome as SECONDARY flavor but never the focal subject.
+Accurate *specific* champions remain a deferred v3 effort (a stacked per-champion
+LoRA or composited official art).
 
-- **`<vibe>` and `<energy>` are raw tokens at the very end** — e.g.
-  `…, highly detailed, dark_fantasy, intense`. The LoRA learned these tokens,
-  so they MUST be appended verbatim (values match the design enums).
-- **No dedicated lighting slot.** Lighting and effects are woven INTO the scene
-  clause ("glowing red energy in his fist", "ghostly blue light illuminates…").
-- **Scenes are character/champion-driven and action-heavy**, not environmental
-  (Swain ascending, dual-champion combat, a towering monster). We compose
-  scenes from champion/agent archetypes + action + setting + secondary +
-  effect, so "match training" means character key art.
-- **Palette is `"<c1> and <c2> palette"` with color WORDS**, never hex. The UI
-  `primary_color` is a hex, so it is converted to the nearest color word.
+Accordingly the `<scene>` slot describes an ENVIRONMENT (setting + feature +
+atmosphere + effect); any creature/figure stays incidental, and the negative
+prompt suppresses only a DOMINANT character portrait / a named champion (not
+incidental background life). The caption grammar is otherwise unchanged.
+
+Ground-truth facts (from the real V1 captions, still hold):
+- **`<vibe>` and `<energy>` are raw trailing tokens** — e.g.
+  `…, highly detailed, dark_fantasy, chill`. Values match the design enums.
+- **No dedicated lighting slot** — lighting/effects are woven into the scene.
+- **Palette is `"<c1> and <c2> palette"` with color WORDS**, never hex — a UI hex
+  `primary_color` is mapped to the nearest named color.
 - **Mood is `"<adj1> and <adj2> mood"`** — two adjectives.
-- **No composition/overlay phrasing** — overlay-friendliness was baked in via
-  dataset rating/curation (train.md §5), not caption tokens.
+- **No composition/overlay phrasing** — overlay-friendliness comes from dataset
+  curation, not caption tokens.
 
 Variety by design
 -----------------
 A static `vibe -> caption` mapping would make every background look the same.
 Each slot is sampled from curated per-vibe banks via a seeded RNG:
-- Pass `seed` for a reproducible caption (frozen eval set, train.md §8; the
-  content-hash cache in `stages/background.py`).
+- Pass `seed` for a reproducible caption (frozen eval set; the content-hash
+  cache in `stages/background.py`).
 - Omit `seed` and one is generated, used, and returned — so every production
   background differs, yet any specific one can be regenerated.
-
-Coverage note: the banks for `dark_fantasy` / `cyberpunk` / `cosmic` (LoL) are
-grounded in the real captions provided. `cinematic` / `minimal` / `fire_energy`
-and all of Valorant are EXTRAPOLATED and marked below — they should be
-validated / replaced once real captions for those are available.
 
 Public entry point: `build_keyart_prompt(input_data, seed=None)`.
 """
@@ -52,187 +56,177 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
-# Game -> trigger token + LoRA name + the hero noun the scene banks fill in.
-# The trigger MUST match the token the LoRA was trained on.
+# Game -> trigger token + LoRA name. The trigger MUST match the token the LoRA
+# was trained on. (No hero noun: backgrounds are environment-only.)
 # ---------------------------------------------------------------------------
 _GAME_KEYART = {
-    "league_of_legends": {"trigger": "lol_keyart", "lora": "lol_keyart", "hero": "champion"},
-    "valorant": {"trigger": "valo_keyart", "lora": "valo_keyart", "hero": "agent"},
+    "league_of_legends": {"trigger": "lol_keyart", "lora": "lol_keyart"},
+    "valorant": {"trigger": "valo_keyart", "lora": "valo_keyart"},
 }
 
 # ---------------------------------------------------------------------------
 # SCENE banks, keyed by vibe. Each scene is composed as:
-#   "<subject> <action> <setting>[, <secondary>][, <effect>]"
-# with "{hero}" filled from the game ("champion" / "agent"). Character-driven
-# and action-heavy, matching the real training captions. dark_fantasy /
-# cyberpunk / cosmic are data-grounded; the rest are extrapolated (see note).
+#   "<setting> <feature>[, <atmosphere>][, <effect>]"
+# ENVIRONMENT-ONLY — settings/atmosphere/lighting, never characters. Keep these
+# aligned with the V2 training captions (same vocabulary in captions and here).
 # ---------------------------------------------------------------------------
 _SCENE: Dict[str, Dict[str, List[str]]] = {
     "dark_fantasy": {
-        "subjects": [
-            "a dark warlord {hero} in ornate black and crimson armor",
-            "a gaunt spectral mage {hero} wreathed in shadow",
-            "a towering ancient monster with glowing eyes and mossy hide",
-            "a hooded ghostly gunslinger {hero} in a long dark coat",
-            "a winged demonic sovereign {hero} in horned black plate",
-            "two dark warrior {hero}s in ornate black and red armor",
-            "a shirtless white-haired warlord {hero} marked with glowing runes",
-        ],
-        "actions": [
-            "raising a glowing red orb in his open palm",
-            "ascending with massive black demon wings outstretched",
-            "holding a glowing teal energy blade aloft",
-            "floating upward with arms stretched wide",
-            "looming over the battlefield below",
-            "unleashing a burst of dark energy from his hands",
-            "standing tall amid swirling smoke",
-        ],
         "settings": [
-            "against a blazing crimson sky",
-            "in a deep red cathedral shrouded in smoke",
-            "in a dark misty swamp",
-            "in a spectral forest of twisted black trees",
-            "in a barren moonlit wasteland",
-            "against a wall of dark crimson smoke",
-            "in a shattered void of falling debris",
+            "a fog-choked graveyard of crumbling tombs",
+            "a haunted forest of twisted black trees",
+            "a ruined gothic cathedral overgrown with shadow",
+            "a desolate moonlit moor",
+            "a shadowed swamp of dead black water",
+            "a crumbling stone fortress on a storm-dark cliff",
+            "an abandoned battlefield strewn with broken statues",
         ],
-        "secondary": [
-            "crimson ravens swirling all around him",
-            "smaller glowing spirits hovering in the fog",
-            "terrified warriors cowering below",
-            "a massive shattered golem falling apart beneath him",
-            "dead bare trees framing both sides",
-            "ghostly figures rising from the ground",
+        "features": [
+            "shrouded in creeping mist",
+            "lit by scattered ember light",
+            "wrapped in cold pale moonlight",
+            "littered with shattered armor and bone",
+            "wreathed in slow-drifting shadow",
+        ],
+        "atmosphere": [
+            "drifting fog and faint hovering spirits",
+            "swirling ash and dead leaves",
+            "flickering ghost-flames across the ground",
+            "ravens circling a blood-red sky",
         ],
         "effects": [
-            "glowing red energy pulsing from his fist",
-            "deep teal ghost-flame energy surrounding the ground",
-            "blood-red rune markings glowing across his chest and arms",
-            "streaks of magenta fire consuming his hands",
-            "eerie blue light illuminating the mist",
+            "eerie teal light seeping through the mist",
+            "shafts of pale moonlight cutting the dark",
+            "glowing arcane runes pulsing on ancient stone",
+            "a deep crimson glow on the horizon",
         ],
     },
-    "cyberpunk": {
-        "subjects": [
-            "two {hero}s locked in mid-air combat",
-            "a sleek augmented {hero} in a red armored mech",
-            "a neon-lit {hero} in sharp high-tech armor",
-            "a cybernetic {hero} crackling with electric energy",
-        ],
-        "actions": [
-            "unleashing a blue lightning strike",
-            "dodging with a glowing pink energy burst",
-            "charging a crackling energy weapon",
-            "leaping through a shower of sparks",
-        ],
+    "cinematic": {
         "settings": [
-            "in a dark cinematic close-up",
-            "against a neon-lit night skyline",
-            "in a rain-slick neon alley",
-            "inside a glowing high-tech arena",
+            "a vast mountain valley at dawn",
+            "a windswept cliff overlooking a burning valley",
+            "an ancient stone arena open to the sky",
+            "a storm-lashed rocky coastline",
+            "a grand ruined temple half-buried in sand",
+            "a sprawling war-torn landscape at dusk",
         ],
-        "secondary": [
-            "electric blue and hot pink energy clashing at center frame",
-            "holographic glyphs flickering around them",
-            "sparks and debris scattering through the air",
+        "features": [
+            "framed with dramatic depth of field",
+            "under sweeping volumetric light",
+            "steeped in epic cinematic atmosphere",
+            "scarred by distant battle",
+        ],
+        "atmosphere": [
+            "drifting embers and dust in the air",
+            "rolling storm clouds overhead",
+            "distant smoke rising on the horizon",
         ],
         "effects": [
-            "electric arcs snaking across the frame",
-            "neon glow reflecting off wet surfaces",
-            "chromatic light trails streaking behind the motion",
+            "golden god rays breaking through the clouds",
+            "dramatic rim light carving the terrain",
+            "warm sunlight raking across the scene",
         ],
     },
     "cosmic": {
-        "subjects": [
-            "a cosmic-skinned {hero} with flowing galaxy hair",
-            "an ethereal star-forged {hero} wreathed in nebula light",
-            "a celestial {hero} crowned with an eclipse halo",
-        ],
-        "actions": [
-            "aiming an iridescent rifle",
-            "summoning a swirling vortex of starlight",
-            "drifting weightless with arms spread",
-        ],
         "settings": [
-            "surrounded by dark planet fragments and nebula swirls in deep space",
-            "against a vast starfield and a glowing eclipse",
-            "amid drifting cosmic dust and distant galaxies",
+            "a floating island adrift in deep space",
+            "a shattered celestial temple among the stars",
+            "a vast starfield above an alien landscape",
+            "a crystalline void of drifting shards",
+            "an ancient observatory open to the galaxy",
         ],
-        "secondary": [
-            "a glowing eclipse halo behind the head",
-            "shattered planet shards orbiting slowly",
-            "streaks of stardust spiraling inward",
+        "features": [
+            "surrounded by swirling violet nebulae",
+            "beneath a glowing eclipse",
+            "amid slowly orbiting planet fragments",
+            "wrapped in shimmering astral light",
+        ],
+        "atmosphere": [
+            "drifting cosmic dust and stardust",
+            "streaks of aurora light across the void",
+            "distant galaxies turning slowly",
         ],
         "effects": [
-            "iridescent cosmic light shimmering across the scene",
-            "violet nebula glow bleeding into the dark",
+            "iridescent nebula glow bleeding into the dark",
+            "luminous stellar light washing the scene",
         ],
     },
-    # --- EXTRAPOLATED below (no real captions yet — validate/replace) --------
-    "cinematic": {
-        "subjects": [
-            "a battle-worn {hero} in intricately detailed armor",
-            "a lone {hero} silhouetted against dramatic light",
-            "a determined {hero} in a heroic stance",
-        ],
-        "actions": [
-            "gripping a weapon at the ready",
-            "turning toward the camera",
-            "standing firm amid the aftermath",
-        ],
+    "cyberpunk": {
         "settings": [
-            "in a dramatic film-lit environment",
-            "against a moody atmospheric backdrop",
-            "amid drifting smoke and volumetric light",
+            "a neon-lit megacity skyline at night",
+            "a rain-slick downtown street of glowing signs",
+            "a futuristic high-tech facility interior",
+            "an industrial district drenched in neon",
+            "a towering data-spire above the city",
         ],
-        "secondary": [
-            "embers drifting slowly through the air",
-            "distant figures blurred in the background",
+        "features": [
+            "wrapped in holographic haze",
+            "reflecting neon across wet pavement",
+            "crisscrossed by glowing power cables",
+            "lit by towering digital billboards",
+        ],
+        "atmosphere": [
+            "digital rain and drifting steam",
+            "flickering holographic advertisements",
+            "sparks raining from overhead wires",
         ],
         "effects": [
-            "strong rim light carving the silhouette",
-            "volumetric god rays cutting through the haze",
+            "electric magenta and cyan glow",
+            "chromatic light trails streaking the frame",
         ],
     },
     "minimal": {
-        "subjects": [
-            "a single {hero} in a clean composed stance",
-            "a lone {hero} rendered with restraint",
-        ],
-        "actions": [
-            "standing calmly",
-            "posed with quiet intensity",
-        ],
+        # Minimal = a CLEAN composition with ONE clear focal subject + generous
+        # negative space — never an empty void. Every setting names a subject so
+        # the render always has something to anchor on.
         "settings": [
-            "against a clean muted backdrop",
-            "in a spare uncluttered space",
+            "a lone ancient monolith on a vast still salt flat",
+            "a single silhouetted tree on an endless snowfield",
+            "one weathered stone shrine above soft drifting mist",
+            "a solitary curved-roof pavilion by a quiet mountain lake",
+            "a single tall obelisk against a serene fog-veiled valley",
+            "a lone ruined archway on a pale gradient desert",
+            "a single great standing stone on a still shoreline",
         ],
-        "secondary": [],
+        "features": [
+            "composed with generous negative space and clean restraint",
+            "bathed in soft even light with delicate tonal gradients",
+            "reduced to a few simple, elegant forms",
+            "framed by vast calm emptiness",
+            "rendered in hushed, muted tones",
+        ],
+        "atmosphere": [
+            "a faint drifting haze softening the horizon",
+            "a single subtle wisp of light across the stillness",
+            "thin low mist curling slowly over the ground",
+            "a lone bird tracing a slow arc across the open sky",
+        ],
         "effects": [
-            "soft even light wrapping the figure",
-            "a subtle glow outlining the silhouette",
+            "a gentle gradient of soft light fading into pale sky",
+            "a quiet ambient glow along the far horizon",
+            "a delicate rim of dawn light on distant forms",
+            "soft diffused backlight haloing the scene",
         ],
     },
     "fire_energy": {
-        "subjects": [
-            "a fierce {hero} engulfed in flame",
-            "a blazing {hero} in scorched armor",
-        ],
-        "actions": [
-            "erupting with fire from both hands",
-            "swinging a flaming weapon overhead",
-        ],
         "settings": [
-            "amid a storm of embers and rising heat",
-            "against a wall of roaring flame",
+            "a molten volcanic wasteland",
+            "a battlefield engulfed in roaring flame",
+            "a scorched desert under a burning sky",
+            "a lava-filled cavern deep underground",
         ],
-        "secondary": [
-            "sparks and cinders scattering everywhere",
-            "molten cracks glowing underfoot",
+        "features": [
+            "cracked with rivers of glowing magma",
+            "wreathed in rising heat and black smoke",
+            "littered with burning debris",
+        ],
+        "atmosphere": [
+            "showering embers and drifting cinders",
+            "waves of heat distortion rippling the air",
         ],
         "effects": [
-            "explosive firelight flaring across the frame",
-            "waves of heat distortion rippling the air",
+            "explosive firelight flaring across the sky",
+            "a fierce molten-orange glow",
         ],
     },
 }
@@ -264,15 +258,14 @@ _VIBE_BASES = {
 # MOOD adjectives (two are sampled and joined with "and"), keyed by vibe.
 _VIBE_MOODS = {
     "dark_fantasy": [
-        "imposing", "regal", "commanding", "apocalyptic", "monstrous", "haunting",
-        "menacing", "dominating", "ominous", "grim", "resolute", "unsettling",
-        "powerful", "desolate", "brooding", "sinister",
+        "imposing", "ominous", "haunting", "desolate", "brooding", "sinister",
+        "eerie", "grim", "foreboding", "mournful", "mystic", "unsettling",
     ],
-    "cyberpunk": ["fast", "kinetic", "electric", "high-tech", "aggressive", "futuristic", "sleek"],
-    "cosmic": ["elegant", "ominous", "ethereal", "surreal", "transcendent", "vast", "mysterious"],
-    "cinematic": ["epic", "dramatic", "heroic", "grand", "somber", "triumphant", "tense"],
-    "minimal": ["calm", "refined", "elegant", "restrained", "serene", "understated", "clean"],
-    "fire_energy": ["fierce", "blazing", "aggressive", "relentless", "ferocious", "searing"],
+    "cyberpunk": ["electric", "high-tech", "moody", "futuristic", "sleek", "neon-noir", "restless"],
+    "cosmic": ["elegant", "ethereal", "surreal", "transcendent", "vast", "mysterious", "serene"],
+    "cinematic": ["epic", "dramatic", "grand", "somber", "sweeping", "majestic", "tense"],
+    "minimal": ["calm", "refined", "serene", "restrained", "tranquil", "understated", "clean"],
+    "fire_energy": ["fierce", "blazing", "volatile", "searing", "relentless", "molten"],
 }
 
 # Output format -> (width, height). Matches the poster canvas aspect.
@@ -282,13 +275,24 @@ _FORMAT_DIMS = {
     "landscape_1920x1080": (1920, 1080),
 }
 
-# Text-free enforcement. Baked-in pseudo-text is the #1 failure mode for a
-# composited-text pipeline (train.md §4), so text terms lead the list.
+# Text-free + environment-FIRST enforcement. Baked-in pseudo-text is the #1
+# failure mode, so text/logos are hard-suppressed. Incidental background
+# creatures/figures (a distant dragon, a poro, minions, far-off soldiers) are
+# now ALLOWED as atmosphere — only a DOMINANT character portrait / a specific
+# named champion is suppressed, since the hero/player is composited downstream.
 NEGATIVE_PROMPT = (
     "text, words, letters, numbers, typography, caption, title, subtitle, "
     "watermark, signature, logo, brand mark, ui, hud, interface, "
+    "central figure, foreground character, large hero in the middle, "
+    "person filling the frame, main character, armored warrior centered, "
+    "single dominant figure, character close-up, character portrait, "
+    "named champion, recognizable champion likeness, "
     "frame, border, blurry, low quality, jpeg artifacts, "
-    "distorted, deformed, disfigured, oversaturated, cluttered"
+    "distorted, deformed, oversaturated, cluttered, "
+    # Guard against near-empty renders (the minimal-vibe failure mode): the image
+    # must always contain a clear subject, never be a flat void.
+    "blank, empty featureless background, plain flat gradient, "
+    "bare empty scene, no subject, foggy void with nothing in it"
 )
 
 # Defaults when the optional design fields are absent.
@@ -364,16 +368,27 @@ def _color_word(value: str) -> str:
     )
 
 
-def _scene(rng: random.Random, vibe: str, hero: str) -> str:
+# Energy is a DETAIL-DENSITY dial: how many atmosphere/effect clauses the scene
+# carries, from sparse (chill) to packed (explosive). Not literal energy.
+_ENERGY_DENSITY_P = {"chill": 0.25, "balanced": 0.6, "intense": 0.9, "explosive": 1.0}
+
+
+def _scene(rng: random.Random, vibe: str, energy: str = "balanced") -> str:
+    """Compose an ENVIRONMENT scene, with density scaled by energy."""
     bank = _SCENE[vibe]
-    subject = rng.choice(bank["subjects"]).format(hero=hero)
-    action = rng.choice(bank["actions"])
     setting = rng.choice(bank["settings"])
-    parts = [f"{subject} {action} {setting}"]
-    if bank["secondary"] and rng.random() < 0.75:
-        parts.append(rng.choice(bank["secondary"]).format(hero=hero))
-    if bank["effects"] and rng.random() < 0.75:
+    feature = rng.choice(bank["features"])
+    parts = [f"{setting} {feature}"]
+    p = _ENERGY_DENSITY_P.get(energy, 0.7)
+    if bank["atmosphere"] and rng.random() < p:
+        parts.append(rng.choice(bank["atmosphere"]))
+    if bank["effects"] and rng.random() < p:
         parts.append(rng.choice(bank["effects"]))
+    # explosive → pack in extra distinct atmosphere + effect clauses for density.
+    if energy == "explosive":
+        for extra in (rng.choice(bank["atmosphere"]), rng.choice(bank["effects"])):
+            if extra not in parts:
+                parts.append(extra)
     return ", ".join(parts)
 
 
@@ -402,13 +417,13 @@ def build_keyart_prompt(
     seed: Optional[int] = None,
 ) -> KeyartPrompt:
     """
-    Build a background-generation prompt for the fine-tuned Qwen-Image LoRA,
-    in the real training-caption grammar:
+    Build an ENVIRONMENT background-generation prompt for the fine-tuned
+    Qwen-Image LoRA, in the training-caption grammar:
 
         <trigger>, <scene>, <c1> and <c2> palette, <m1> and <m2> mood,
         cinematic esports key art, highly detailed, <vibe>, <energy>
 
-    Reads `_meta.game` (trigger/LoRA/hero + fail-loud), `_meta.output_format`
+    Reads `_meta.game` (trigger/LoRA + fail-loud), `_meta.output_format`
     (dimensions), and the optional `design` object (`vibe` / `primary_color` /
     `energy`). `seed` makes the caption reproducible; when omitted a seed is
     generated, used, and returned so the same background can be regenerated.
@@ -434,7 +449,7 @@ def build_keyart_prompt(
 
     slots: List[str] = [
         keyart["trigger"],
-        _scene(rng, vibe, keyart["hero"]),
+        _scene(rng, vibe, energy),
         _palette_slot(rng, vibe, design),
         _mood_slot(rng, vibe),
         *_CAPTION_TAIL,

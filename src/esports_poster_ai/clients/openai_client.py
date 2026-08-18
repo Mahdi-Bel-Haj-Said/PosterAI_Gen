@@ -43,13 +43,19 @@ T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 
 
-# Shown to the user when the vision model declines to analyze the background.
+# Shown to the user when the vision model returns nothing usable even after
+# retries. The prior copy asserted "copyrighted content" as the cause, but the
+# analyzer (gpt-4o) intermittently returns an empty / refusal-shaped response for
+# perfectly clean images — so we lead with the far more likely explanation (a
+# transient hiccup → just retry) and keep the copyright note as a secondary hint
+# that only really applies to user uploads.
 _BACKGROUND_REJECTED_MSG = (
-    "We couldn't use this background. The AI image analyzer rejected it, which "
-    "almost always means it contains copyrighted or recognizable content "
-    "(official game art, characters, or team logos baked into the image). "
-    "Go back and pick a different background — original or properly-licensed "
-    "artwork with no recognizable characters or logos works best."
+    "We couldn't generate this poster — the image analyzer returned an empty "
+    "response for the background, even after several retries. This is almost "
+    "always a temporary hiccup with the analyzer, not a problem with your image, "
+    "so please try again. If you uploaded your own background and it keeps "
+    "failing, check that it has no recognizable characters, team logos, or "
+    "copyrighted artwork baked in."
 )
 
 _REFUSAL_PREFIXES = (
@@ -60,6 +66,30 @@ _REFUSAL_SNIPPETS = (
     "can't assist", "cannot assist", "can't help with", "cannot help with",
     "unable to assist", "unable to help", "can't provide", "cannot provide",
 )
+
+
+# The prompt-stage model is told to output ONLY the image prompt, but gpt-4o
+# often wraps it in a markdown code fence and/or a label line ("```",
+# "BACKGROUND ANALYSIS:", "Here is the prompt:"). That preamble then leaks into
+# the gpt-image-2 prompt and dilutes it. Strip it so the image model gets clean
+# scene text.
+_LEADING_LABEL_RE = re.compile(
+    r"^\s*(?:here(?:'s| is)\b[^\n]*|sure\b[^\n]*|(?:image[- ]?)?(?:generation )?prompt"
+    r"|background analysis|revised prompt|final prompt)\s*:\s*\n+",
+    re.IGNORECASE,
+)
+
+
+def _strip_preamble(text: str) -> str:
+    """Remove wrapping ``` fences and a leading label line; keep the prompt body.
+
+    Falls back to the original text if stripping would empty it (never returns "").
+    """
+    t = (text or "").strip()
+    t = re.sub(r"^```[^\n`]*\n", "", t)          # opening fence line (```/```lang)
+    t = re.sub(r"\n?```[ \t]*$", "", t).strip()  # closing fence
+    t = _LEADING_LABEL_RE.sub("", t, count=1).strip()
+    return t or (text or "").strip()
 
 
 def _looks_like_refusal(text: str) -> bool:
@@ -158,28 +188,50 @@ class OpenAIClient:
             extra={"run_id": run_id, "model": model, "max_output_tokens": max_output_tokens},
         )
 
-        text = self._call_responses(
-            run_id=run_id,
-            model=model,
-            max_output_tokens=max_output_tokens,
-            assembled_prompt=assembled_prompt,
-            image_bytes=background_image,
-            instructions=instructions,
-        )
-
-        # An empty response, or a polite refusal, from the vision model almost
-        # always means it declined to analyze the background (copyrighted /
-        # recognizable content). Surface that as an actionable, user-facing error
-        # instead of a cryptic "empty text".
-        if not text or _looks_like_refusal(text):
-            logger.warning(
-                "prompt_stage.background_rejected",
-                extra={"run_id": run_id, "head": (text or "")[:120]},
+        # The vision model INTERMITTENTLY returns an empty or refusal-shaped
+        # response for a perfectly clean background (a non-deterministic gpt-4o
+        # hiccup — the same input succeeds on the next call). A single empty
+        # response is therefore NOT evidence of a bad background, so we retry the
+        # whole call a few times before giving up, instead of failing the poster
+        # on the first blank. (This is separate from `_call_responses`'s own
+        # retry, which only covers transient API/network errors.)
+        attempts = max(1, self.settings.openai_max_retries)
+        last_head = ""
+        for attempt in range(1, attempts + 1):
+            text = self._call_responses(
+                run_id=run_id,
+                model=model,
+                max_output_tokens=max_output_tokens,
+                assembled_prompt=assembled_prompt,
+                image_bytes=background_image,
+                instructions=instructions,
             )
-            raise BackgroundRejectedError(_BACKGROUND_REJECTED_MSG)
+            if text and not _looks_like_refusal(text):
+                cleaned = _strip_preamble(text)
+                logger.info(
+                    "prompt_stage.done",
+                    extra={"run_id": run_id, "chars": len(cleaned), "attempt": attempt},
+                )
+                return cleaned
+            last_head = (text or "")[:120]
+            logger.warning(
+                "prompt_stage.empty_or_refusal",
+                extra={
+                    "run_id": run_id,
+                    "attempt": attempt,
+                    "attempts": attempts,
+                    "empty": not text,
+                    "head": last_head,
+                },
+            )
 
-        logger.info("prompt_stage.done", extra={"run_id": run_id, "chars": len(text)})
-        return text
+        # Exhausted retries — surface an honest, actionable error (leads with
+        # "transient, try again"; copyright is only a secondary hint for uploads).
+        logger.warning(
+            "prompt_stage.background_rejected",
+            extra={"run_id": run_id, "attempts": attempts, "last_head": last_head},
+        )
+        raise BackgroundRejectedError(_BACKGROUND_REJECTED_MSG)
 
     # ---------------------------------------------------------------- image
     def generate_poster(

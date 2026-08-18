@@ -106,6 +106,16 @@ def _extract_input_images(input_data: Dict[str, Any], project_root: Path) -> Lis
         raw = _read_image(project_root, path)
         if raw:
             images.append(resize_for_reference(raw, cap))
+
+    # Official game logo (e.g. the LoL wordmark) as a reference image, so the
+    # image model renders the EXACT mark where the vision model placed it (see
+    # prompt/blocks/game_logo.py). Gated + resolved centrally in `brand.py`.
+    from esports_poster_ai.brand import game_logo_bytes
+
+    logo_raw = game_logo_bytes(meta.get("game"))
+    if logo_raw:
+        images.append(resize_for_reference(logo_raw, LOGO_MAX_DIM))
+
     return images
 
 

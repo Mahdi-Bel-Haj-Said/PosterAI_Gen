@@ -56,6 +56,19 @@ def main(argv: list[str] | None = None) -> None:
         "worker.start",
         extra={"queues": [QUEUE_NAME, WEBHOOK_QUEUE], "burst": args.burst},
     )
+
+    # Crash recovery: if a durable bank refill was interrupted (leftover pending
+    # work) and no drainer is alive, resume it in a detached process. Off the burst
+    # path (tests) and fully guarded — worker startup must never fail on this.
+    if not args.burst:
+        try:
+            from esports_poster_ai.bank.drain import ensure_drain_running
+
+            if ensure_drain_running(settings=settings, only_if_pending=True):
+                logger.info("worker.resumed_bank_refill")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("worker.refill_recovery_failed", extra={"error": str(e)})
+
     SimpleWorker(queues, connection=connection).work(burst=args.burst)
 
 
