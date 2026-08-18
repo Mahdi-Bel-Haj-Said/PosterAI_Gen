@@ -9,9 +9,30 @@ const STEPS = [
 ];
 
 const GAMES = [
-  { id: "league_of_legends", name: "League of Legends", short: "LoL", accent: "oklch(60% 0.18 220)" },
-  { id: "valorant",          name: "Valorant",          short: "VAL", accent: "oklch(60% 0.22 15)" },
+  { id: "league_of_legends", name: "League of Legends", short: "LoL", accent: "oklch(60% 0.18 220)", logo: "assets/games/lol.jpg" },
+  { id: "valorant",          name: "Valorant",          short: "VAL", accent: "oklch(60% 0.22 15)", logo: "assets/games/valorant.jpg" },
 ];
+
+// Game badge: shows the logo image if present (drop official files into
+// Poster-ai-frontend/assets/games/), else falls back to the styled short-label tile.
+function GameMark({ game }) {
+  const [failed, setFailed] = React.useState(false);
+  const showImg = game.logo && !failed;
+  return (
+    <div style={{
+      width: 56, height: 56, borderRadius: 12, overflow: "hidden",
+      background: showImg ? "var(--surface-2)" : `linear-gradient(135deg, ${game.accent}, oklch(20% 0.05 350))`,
+      border: "1px solid var(--line-strong)",
+      fontFamily: "var(--f-display)", fontSize: 18, color: "white",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      {showImg
+        ? <img src={game.logo} alt={game.name} onError={() => setFailed(true)}
+               style={{ width: "100%", height: "100%", objectFit: "contain", padding: 6 }} />
+        : game.short}
+    </div>
+  );
+}
 
 const POSTER_TYPES = [
   { id: "gameday",                title: "Gameday",         desc: "Upcoming matchup w/ time + stream",   ico: "clock" },
@@ -65,6 +86,24 @@ const PRESET_TEAMS = [
 
 const VALORANT_MAPS = ["Haven","Ascent","Bind","Split","Lotus","Pearl","Sunset","Icebox","Breeze","Fracture"];
 const LOL_ROLES = ["Top","Jungle","Mid","Bot","Support"];
+const VALORANT_ROLES = ["Duelist","Initiator","Controller","Sentinel","Flex","IGL"];
+// Role dropdown options for the roster, per game.
+function rolesForGame(game) { return game === "valorant" ? VALORANT_ROLES : LOL_ROLES; }
+// Default 5-slot roster roles, by position, per game — used to seed the roster
+// and to remap when the user switches games (so a Valorant roster never shows
+// League roles like Top/Jungle/ADC).
+const DEFAULT_ROSTER_ROLES = {
+  league_of_legends: ["Top","Jungle","Mid","Bot","Support"],
+  valorant: ["Duelist","Initiator","Controller","Sentinel","Flex"],
+};
+// Guarantee a game-appropriate role: keep it if valid for this game, otherwise
+// fall back to the positional default. Stops a stale default (e.g. a slot-2
+// "Jungle" that was never re-selected) from reaching a Valorant poster.
+function coerceRole(role, game, i) {
+  if (rolesForGame(game).includes(role)) return role;
+  const defaults = DEFAULT_ROSTER_ROLES[game] || DEFAULT_ROSTER_ROLES.league_of_legends;
+  return defaults[i % defaults.length];
+}
 
 function slugify(s) {
   return (s || "")
@@ -109,6 +148,79 @@ function clampScore(raw, other, format) {
   v = Math.min(v, target);              // a team can't win more than the target
   if (v + o > max) v = Math.max(0, max - o);  // and the series can't run past N games
   return v;
+}
+
+// --- Valorant map-result validation -----------------------------------------
+// A Valorant map is first-to-13, win by 2. Valid finals: regulation (winner 13,
+// loser 0..11) OR overtime (winner >= 14, exactly +2, loser >= 12). So 13-0 …
+// 13-11, then 14-12, 15-13, 16-14, …  Ties and 13-12 are impossible.
+function isValidValorantMapScore(a, b) {
+  const t1 = parseInt(a, 10), t2 = parseInt(b, 10);
+  if (!Number.isFinite(t1) || !Number.isFinite(t2) || t1 < 0 || t2 < 0) return false;
+  if (t1 === t2) return false;                              // a map always has a winner
+  const hi = Math.max(t1, t2), lo = Math.min(t1, t2);
+  if (hi === 13 && lo <= 11) return true;                  // regulation
+  if (hi >= 14 && hi - lo === 2 && lo >= 12) return true;  // overtime, win by 2
+  return false;
+}
+
+// Games actually played = sum of the series score. A 3-2 BO5 played 5 maps; a
+// 3-0 played 3. The number of Valorant maps must equal this.
+function gamesPlayed(form) {
+  return (parseInt(form.score_a, 10) || 0) + (parseInt(form.score_b, 10) || 0);
+}
+
+// First Valorant map not already used (for adding / defaulting without repeats).
+function firstUnusedMap(maps) {
+  const used = new Set((maps || []).map((m) => m.map_name));
+  return VALORANT_MAPS.find((x) => !used.has(x)) || VALORANT_MAPS[0];
+}
+
+// Every problem with the current Valorant map list, as user-facing strings.
+// Empty array = valid. Only meaningful for Valorant game_results.
+function valorantMapIssues(form) {
+  if (form.game !== "valorant" || form.poster_type !== "game_results") return [];
+  const maps = form.valorant_maps || [];
+  const n = gamesPlayed(form);
+  const fmt = (form.match_format || "BO5").toUpperCase();
+  const issues = [];
+
+  if (maps.length > n) {
+    issues.push(`Too many maps — a ${fmt} ending ${form.score_a}-${form.score_b} has ${n} map${n === 1 ? "" : "s"}.`);
+  }
+  const seen = {};
+  maps.forEach((m) => { const k = (m.map_name || "").toLowerCase(); if (k) seen[k] = (seen[k] || 0) + 1; });
+  const dups = Object.keys(seen).filter((k) => seen[k] > 1);
+  if (dups.length) issues.push(`Each map can appear only once (repeated: ${dups.join(", ")}).`);
+
+  maps.forEach((m, i) => {
+    if (!isValidValorantMapScore(m.rounds_team1, m.rounds_team2)) {
+      issues.push(`Map ${i + 1}${m.map_name ? ` (${m.map_name})` : ""}: ${m.rounds_team1 || 0}-${m.rounds_team2 || 0} isn't a valid Valorant score.`);
+    }
+  });
+
+  // Once every map is filled in, the map wins must match the series score.
+  if (n > 0 && maps.length === n && maps.every((m) => isValidValorantMapScore(m.rounds_team1, m.rounds_team2))) {
+    let w1 = 0, w2 = 0;
+    maps.forEach((m) => { (+m.rounds_team1 > +m.rounds_team2) ? w1++ : w2++; });
+    if (w1 !== (+form.score_a || 0) || w2 !== (+form.score_b || 0)) {
+      issues.push(`Map wins (${w1}-${w2}) don't match the series score (${form.score_a}-${form.score_b}).`);
+    }
+  }
+  return issues;
+}
+
+function valorantMapsValid(form) { return valorantMapIssues(form).length === 0; }
+
+// When the series score or format drops the games-played count, trim extra
+// Valorant maps so the list can never exceed the number of games played.
+function withTrimmedMaps(form, patch) {
+  const next = { ...form, ...patch };
+  const n = gamesPlayed(next);
+  if (next.game === "valorant" && (next.valorant_maps || []).length > n) {
+    return { ...patch, valorant_maps: next.valorant_maps.slice(0, n) };
+  }
+  return patch;
 }
 
 /* ============================================================
@@ -273,6 +385,55 @@ function buildSponsorLibrary(assets) {
   return Array.from(seen.values());
 }
 
+// Short display label for a player-image chip (the IGN / filename).
+function playerLabel(a) {
+  const n = (a && a.name ? a.name : "").trim().replace(/\.(png|jpe?g|webp)$/i, "");
+  if (!n) return "player";
+  return n.length > 14 ? n.slice(0, 13) + "…" : n;
+}
+
+// Collapse player-image assets into one chip per player (most-recent wins).
+function buildPlayerImageLibrary(assets) {
+  const seen = new Map();
+  for (const a of assets || []) {
+    const key = (a.name || "").trim().toLowerCase().replace(/\.(png|jpe?g|webp)$/i, "")
+      || a.storage_key || a.asset_id;
+    if (!key) continue;
+    if (!seen.has(key)) seen.set(key, a);
+  }
+  return Array.from(seen.values());
+}
+
+// Reusable "QUICK PICK" chip row for image assets already in the brand library.
+// Clicking a chip calls onPick(asset). Mirrors the team-logo quick-pick style.
+function ImageQuickPick({ library, selectedId, onPick, labelOf = playerLabel }) {
+  if (!library || library.length === 0) return null;
+  return (
+    <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
+      <span className="mono" style={{ fontSize: 10, color: "var(--fg-4)", letterSpacing: "0.08em" }}>QUICK PICK:</span>
+      {library.map((a) => {
+        const on = selectedId && a.asset_id === selectedId;
+        return (
+          <button key={a.asset_id} title={labelOf(a)}
+            onClick={() => onPick(a)}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.06em",
+              padding: "2px 8px 2px 3px", background: on ? "var(--crim-soft)" : "transparent",
+              border: "1px solid " + (on ? "var(--crim-line)" : "var(--line)"), borderRadius: 999,
+              color: "var(--fg-2)", cursor: "pointer",
+            }}>
+            {a.signed_url
+              ? <img src={a.signed_url} alt="" style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", background: "var(--surface-3)" }} />
+              : <span style={{ width: 18, height: 18, borderRadius: "50%", background: "var(--surface-3)" }} />}
+            {labelOf(a)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function emptyTeam() { return { name: "", short: "", logo_asset: null }; }
 function emptyPlayer(role) {
   return { ign: "", role, image_asset: null, nationality_flag_asset: null, is_new_signing: false };
@@ -305,9 +466,9 @@ function defaultForm() {
     // game_results
     score_a: 0,
     score_b: 0,
-    valorant_maps: [
-      { map_name: "Haven", rounds_team1: 0, rounds_team2: 0 },
-    ],
+    // Valorant per-map results — added by the user, capped at games-played
+    // (score_a + score_b), no repeated maps. See valorantMapIssues().
+    valorant_maps: [],
     mvp_on: false,
     mvp_ign: "",
     mvp_stat_label: "",
@@ -339,6 +500,7 @@ function defaultForm() {
     style_mode: "fresh",
     vibe: "cinematic",
     color: "#E83A57",
+    color_mode: "dominant", // "dominant" (force color) | "auto" (derive from background)
     energy: "intense",
     style_dna: null,
     style_dna_status: null, // "approved" | "draft" | null
@@ -353,13 +515,19 @@ function defaultForm() {
     sponsor_assets: [],
     // Background canvas source: "system_pool" (current default) | "custom"
     // (user upload) | "generated" (Runpod fine-tuned SD — not yet wired).
-    background_source: "system_pool",
+    background_source: "custom",
     custom_background_asset: null,
 
     // brand library — team logos already uploaded for this org (quick-pick)
     team_logo_library: [],
     // brand library — sponsor logos already uploaded for this org (quick-pick)
     sponsor_library: [],
+    // brand library — player images already uploaded for this org (quick-pick)
+    player_image_library: [],
+    // previously-used tournament names (datalist suggestions on the name field)
+    tournament_name_suggestions: [],
+    // all the org's saved Style DNAs — pickable in consistency mode on any poster
+    style_library: [],
   };
 }
 
@@ -370,7 +538,7 @@ function defaultForm() {
 const WIZARD_DRAFT_KEY = "epai_wizard_draft_v1";
 
 // Fetched/transient fields — not persisted (re-derived on load).
-const _EPHEMERAL_FIELDS = ["style_dna", "style_dna_status", "style_dna_loading", "team_logo_library", "sponsor_library"];
+const _EPHEMERAL_FIELDS = ["style_dna", "style_dna_status", "style_dna_loading", "team_logo_library", "sponsor_library", "player_image_library", "tournament_name_suggestions", "style_library"];
 
 function loadWizardDraft() {
   try {
@@ -420,7 +588,10 @@ function buildInputJSON(form) {
 
   const design = {
     vibe: form.vibe,
-    primary_color: form.color,
+    // In auto mode the poster takes its palette from the background, so don't
+    // send a forced color.
+    primary_color: form.color_mode === "auto" ? null : form.color,
+    color_mode: form.color_mode,
     energy: form.energy,
   };
 
@@ -533,9 +704,9 @@ function buildInputJSON(form) {
       roster: {
         season: form.roster_season || null,
         head_coach: form.roster_coach || null,
-        players: form.roster_players.map((p) => ({
+        players: form.roster_players.map((p, i) => ({
           ign: p.ign || "",
-          role: p.role,
+          role: coerceRole(p.role, game, i),
           image_path: p.image_asset?.storage_key || null,
           nationality_flag_path: p.nationality_flag_asset?.storage_key || null,
           is_new_signing: !!p.is_new_signing,
@@ -740,42 +911,56 @@ function Step1({ form, set }) {
           const on = form.game === g.id;
           return (
             <button key={g.id}
-              onClick={() => set({ game: g.id })}
+              onClick={() => {
+                const patch = { game: g.id };
+                // AI-generated backgrounds are LoL-only; drop a stale "generated"
+                // selection when switching to a game that doesn't support it.
+                if (g.id !== "league_of_legends" && form.background_source === "generated") {
+                  patch.background_source = "custom";
+                }
+                // Roster roles are game-specific — remap by position so a Valorant
+                // roster shows Duelist/Initiator/… not League's Top/Jungle/ADC
+                // (and vice-versa). Player names/photos are preserved.
+                if (g.id !== form.game) {
+                  const roles = DEFAULT_ROSTER_ROLES[g.id] || DEFAULT_ROSTER_ROLES.league_of_legends;
+                  patch.roster_players = (form.roster_players || []).map(
+                    (p, i) => ({ ...p, role: roles[i % roles.length] })
+                  );
+                }
+                set(patch);
+              }}
               className="card"
               style={{
-                padding: 24, cursor: "pointer", background: "transparent",
+                padding: 0, cursor: "pointer", background: "var(--surface-2)",
                 borderColor: on ? "var(--crim)" : "var(--line)",
                 outline: on ? "3px solid var(--crim-soft)" : "none",
                 outlineOffset: -1,
                 textAlign: "left",
                 position: "relative",
                 overflow: "hidden",
+                minHeight: 168,
               }}>
-              <div style={{ position: "absolute", right: -40, top: -40, width: 160, height: 160,
-                    borderRadius: "50%", background: `radial-gradient(circle, ${g.accent}, transparent 60%)`,
-                    opacity: 0.4, pointerEvents: "none" }} />
-              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                <div style={{ width: 56, height: 56, borderRadius: 12,
-                      background: `linear-gradient(135deg, ${g.accent}, oklch(20% 0.05 350))`,
-                      border: "1px solid var(--line-strong)",
-                      fontFamily: "var(--f-display)", fontSize: 18, color: "white",
-                      display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {g.short}
+              {/* Game key-art as the card hero, with a bottom scrim for the label. */}
+              <img src={g.logo} alt="" aria-hidden="true"
+                   onError={(e) => { e.currentTarget.style.display = "none"; }}
+                   style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
+                            objectFit: "cover", objectPosition: "center 26%",
+                            opacity: on ? 1 : 0.85, transition: "opacity .3s" }} />
+              <div style={{ position: "absolute", inset: 0,
+                    background: "linear-gradient(to top, rgba(8,8,11,0.95) 6%, rgba(8,8,11,0.45) 42%, rgba(8,8,11,0.08) 100%)" }} />
+              <div style={{ position: "relative", padding: "24px", minHeight: 168, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                <div style={{ fontFamily: "var(--f-display)", fontSize: 21, letterSpacing: "-0.01em", color: "#fff", textShadow: "0 2px 14px rgba(0,0,0,0.7)" }}>{g.name}</div>
+                <div className="mono" style={{ fontSize: 11, color: "var(--fg-2)", letterSpacing: "0.08em", textTransform: "uppercase", marginTop: 4 }}>
+                  {g.id === "valorant" ? "5v5 tactical · maps" : "5v5 moba · roles"}
                 </div>
-                <div>
-                  <div style={{ fontFamily: "var(--f-display)", fontSize: 20, letterSpacing: "-0.01em" }}>{g.name}</div>
-                  <div className="mono" style={{ fontSize: 11, color: "var(--fg-3)", letterSpacing: "0.08em", textTransform: "uppercase", marginTop: 4 }}>
-                    {g.id === "valorant" ? "5v5 tactical · maps" : "5v5 moba · roles"}
-                  </div>
-                </div>
-                {on && (
-                  <div style={{ marginLeft: "auto", color: "var(--crim)" }}>
-                    <div style={{ width: 24, height: 24, borderRadius: "50%", background: "var(--crim)", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <Icon name="check" size={14}/>
-                    </div>
-                  </div>
-                )}
               </div>
+              {on && (
+                <div style={{ position: "absolute", top: 14, right: 14 }}>
+                  <div style={{ width: 24, height: 24, borderRadius: "50%", background: "var(--crim)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 10px rgba(0,0,0,0.5)" }}>
+                    <Icon name="check" size={14}/>
+                  </div>
+                </div>
+              )}
             </button>
           );
         })}
@@ -811,18 +996,84 @@ function Step1({ form, set }) {
   );
 }
 
+// Duotone line-art thumbnails per poster type. Colors are applied via `style` so
+// CSS variables resolve; c1 = primary (crimson), c2 = secondary (cyan).
+const POSTER_TYPE_ART = {
+  gameday: (c1, c2) => (
+    <>
+      <path d="M14 24 h24 v20 q0 11 -12 17 q-12 -6 -12 -17 z" strokeWidth="3" strokeLinejoin="round" style={{ stroke: c1, fill: "none" }} />
+      <path d="M62 24 h24 v20 q0 11 -12 17 q-12 -6 -12 -17 z" strokeWidth="3" strokeLinejoin="round" style={{ stroke: c2, fill: "none" }} />
+      <text x="50" y="50" textAnchor="middle" style={{ fill: c1, font: "800 17px var(--f-display, sans-serif)" }}>VS</text>
+      <circle cx="50" cy="80" r="9" strokeWidth="2.5" style={{ stroke: c2, fill: "none" }} />
+      <path d="M50 80 v-5 M50 80 h4" strokeWidth="2.5" strokeLinecap="round" style={{ stroke: c2, fill: "none" }} />
+    </>
+  ),
+  game_results: (c1, c2) => (
+    <>
+      <text x="33" y="42" textAnchor="middle" style={{ fill: c1, font: "800 26px var(--f-display, sans-serif)" }}>2</text>
+      <rect x="45" y="29" width="10" height="3.5" style={{ fill: c2 }} />
+      <text x="67" y="42" textAnchor="middle" style={{ fill: c2, font: "800 26px var(--f-display, sans-serif)" }}>1</text>
+      <path d="M40 60 h20 v6 q0 10 -10 12 q-10 -2 -10 -12 z" strokeWidth="3" strokeLinejoin="round" style={{ stroke: c1, fill: "none" }} />
+      <path d="M40 62 q-7 0 -7 -7 M60 62 q7 0 7 -7" strokeWidth="2.5" style={{ stroke: c1, fill: "none" }} />
+      <rect x="46" y="82" width="8" height="6" style={{ fill: c1 }} />
+      <rect x="39" y="88" width="22" height="3" style={{ fill: c1 }} />
+    </>
+  ),
+  roster_reveal: (c1, c2) => (
+    <>
+      {[16, 33, 50, 67, 84].map((x, i) => {
+        const col = i % 2 ? c2 : c1;
+        return (
+          <g key={x}>
+            <circle cx={x} cy="42" r="7" strokeWidth="2.5" style={{ stroke: col, fill: "none" }} />
+            <path d={`M${x - 10} 74 q0 -13 10 -13 q10 0 10 13`} strokeWidth="2.5" style={{ stroke: col, fill: "none" }} />
+          </g>
+        );
+      })}
+    </>
+  ),
+  tournament_announcement: (c1, c2) => (
+    <>
+      {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => {
+        const rad = (a * Math.PI) / 180, cx = 50, cy = 44;
+        return <line key={a} x1={cx + 21 * Math.cos(rad)} y1={cy + 21 * Math.sin(rad)} x2={cx + 30 * Math.cos(rad)} y2={cy + 30 * Math.sin(rad)} strokeWidth="2" strokeLinecap="round" style={{ stroke: c2 }} />;
+      })}
+      <path d="M40 32 h20 v6 q0 10 -10 12 q-10 -2 -10 -12 z" strokeWidth="3" strokeLinejoin="round" style={{ stroke: c1, fill: "none" }} />
+      <rect x="46" y="50" width="8" height="6" style={{ fill: c1 }} />
+      <rect x="39" y="56" width="22" height="3" style={{ fill: c1 }} />
+      <text x="50" y="88" textAnchor="middle" style={{ fill: c2, font: "800 16px var(--f-display, sans-serif)" }}>$</text>
+    </>
+  ),
+  tournament_banner: (c1, c2) => (
+    <>
+      <circle cx="66" cy="32" r="8" strokeWidth="2.5" style={{ stroke: c2, fill: "none" }} />
+      <path d="M14 64 L34 38 L48 58 L62 42 L86 64 Z" strokeWidth="3" strokeLinejoin="round" style={{ stroke: c1, fill: "none" }} />
+      <line x1="12" y1="64" x2="88" y2="64" strokeWidth="2.5" style={{ stroke: c1 }} />
+      <rect x="24" y="76" width="52" height="13" rx="2" strokeWidth="2.5" style={{ stroke: c2, fill: "none" }} />
+      <line x1="31" y1="82.5" x2="69" y2="82.5" strokeWidth="2" style={{ stroke: c2 }} />
+    </>
+  ),
+};
+
 function MiniPosterPreview({ type, on }) {
-  const accent = on ? "var(--crim)" : "var(--fg-3)";
+  const c1 = on ? "var(--crim)" : "var(--fg-3)";
+  const c2 = on ? "var(--cy)" : "var(--fg-4)";
   const bg = "linear-gradient(140deg, oklch(20% 0.04 350), oklch(12% 0.02 350))";
+  const art = POSTER_TYPE_ART[type];
   return (
     <div style={{
       flex: 1, borderRadius: 6, background: bg,
-      border: "1px solid var(--line)", padding: 10,
+      border: "1px solid var(--line)",
       position: "relative", overflow: "hidden", minHeight: 100,
     }}>
-      <div style={{ position: "absolute", inset: 0, opacity: 0.5,
+      <div style={{ position: "absolute", inset: 0, opacity: 0.4,
         backgroundImage: "repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 4px)" }} />
-      <div className="mono" style={{ fontSize: 7, letterSpacing: "0.18em", color: accent, textTransform: "uppercase" }}>
+      <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ maxHeight: 92 }}>
+          {art ? art(c1, c2) : null}
+        </svg>
+      </div>
+      <div className="mono" style={{ position: "absolute", top: 8, left: 10, fontSize: 7, letterSpacing: "0.18em", color: c1, textTransform: "uppercase" }}>
         {type.replace(/_/g, " ").toUpperCase()}
       </div>
     </div>
@@ -832,18 +1083,28 @@ function MiniPosterPreview({ type, on }) {
 /* ───── Step 2: Poster data ───── */
 function Step2({ form, set }) {
   const ptype = form.poster_type;
+  // "Phase" (Playoffs / Quarterfinals) only makes sense for a specific match —
+  // not for whole-tournament announce/banner posters, so hide it there.
+  const showPhase = ptype === "gameday" || ptype === "game_results";
   return (
     <>
       {ptype !== "roster_reveal" && (
         <>
           <SectionLabel n="02.A" label="Tournament" />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 240px", gap: 14, marginBottom: 32 }}>
+          <div style={{ display: "grid", gridTemplateColumns: showPhase ? "1fr 1fr 240px" : "1fr 240px", gap: 14, marginBottom: 32 }}>
             <FormField label="Tournament name" req>
-              <input className="input" value={form.tournament_name} onChange={(e) => set({ tournament_name: e.target.value })} placeholder="MENA Pro League" />
+              {/* Free text, with a dropdown of the org's previously-used tournaments. */}
+              <input className="input" list="epai-tournament-names" value={form.tournament_name}
+                     onChange={(e) => set({ tournament_name: e.target.value })} placeholder="MENA Pro League" />
+              <datalist id="epai-tournament-names">
+                {(form.tournament_name_suggestions || []).map((n) => <option key={n} value={n} />)}
+              </datalist>
             </FormField>
-            <FormField label="Tournament phase">
-              <input className="input" value={form.tournament_phase} onChange={(e) => set({ tournament_phase: e.target.value })} placeholder="Playoffs · Quarterfinals" />
-            </FormField>
+            {showPhase && (
+              <FormField label="Tournament phase">
+                <input className="input" value={form.tournament_phase} onChange={(e) => set({ tournament_phase: e.target.value })} placeholder="Playoffs · Quarterfinals" />
+              </FormField>
+            )}
             <FormField label="Tournament logo">
               <AssetUpload assetType="tournament-logos" orgId={form.org_id}
                            asset={form.tournament_logo_asset}
@@ -872,7 +1133,7 @@ function Step2({ form, set }) {
                 let a = Math.min(Number.isFinite(+form.score_a) ? +form.score_a : 0, target);
                 let b = Math.min(Number.isFinite(+form.score_b) ? +form.score_b : 0, target);
                 if (a + b > max) { b = Math.min(b, max); a = Math.min(a, max - b); }
-                set({ match_format: v, score_a: a, score_b: b });
+                set(withTrimmedMaps(form, { match_format: v, score_a: a, score_b: b }));
               }} />
             </FormField>
             <FormField label="Date">
@@ -913,12 +1174,12 @@ function Step2({ form, set }) {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 14, marginBottom: 24, alignItems: "end" }}>
                 <FormField label="Team 1 score" req>
                   <input className="input" type="number" value={form.score_a}
-                         onChange={(e) => set({ score_a: clampScore(e.target.value, form.score_b, form.match_format) })}
+                         onChange={(e) => set(withTrimmedMaps(form, { score_a: clampScore(e.target.value, form.score_b, form.match_format) }))}
                          min="0" max={seriesWinTarget(form.match_format)} />
                 </FormField>
                 <FormField label="Team 2 score" req>
                   <input className="input" type="number" value={form.score_b}
-                         onChange={(e) => set({ score_b: clampScore(e.target.value, form.score_a, form.match_format) })}
+                         onChange={(e) => set(withTrimmedMaps(form, { score_b: clampScore(e.target.value, form.score_a, form.match_format) }))}
                          min="0" max={seriesWinTarget(form.match_format)} />
                 </FormField>
                 <div className="card" style={{ padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, borderColor: "var(--crim-line)", background: "var(--crim-soft)" }}>
@@ -933,37 +1194,61 @@ function Step2({ form, set }) {
                 </div>
               </div>
 
-              {form.game === "valorant" && (
+              {form.game === "valorant" && (() => {
+                const n = gamesPlayed(form);
+                const maps = form.valorant_maps;
+                const issues = valorantMapIssues(form);
+                const canAdd = maps.length < n;
+                return (
                 <>
-                  <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-                    <span className="label" style={{ marginBottom: 0 }}>Map results</span>
-                    <button className="btn btn-ghost" style={{ height: 30, fontSize: 12 }}
-                            onClick={() => set({ valorant_maps: [...form.valorant_maps, { map_name: "Haven", rounds_team1: 0, rounds_team2: 0 }] })}>
+                  <div className="row" style={{ justifyContent: "space-between", marginBottom: 10, alignItems: "center" }}>
+                    <span className="label" style={{ marginBottom: 0 }}>
+                      Map results · <span className="mono" style={{ color: (maps.length === n && n > 0) ? "var(--cy)" : "var(--fg-3)" }}>{maps.length}/{n}</span>
+                    </span>
+                    <button className="btn btn-ghost" style={{ height: 30, fontSize: 12, opacity: canAdd ? 1 : 0.4, cursor: canAdd ? "pointer" : "not-allowed" }}
+                            disabled={!canAdd}
+                            title={canAdd ? "Add the next map" : `A ${(form.match_format || "BO5").toUpperCase()} ending ${form.score_a}-${form.score_b} played ${n} map${n === 1 ? "" : "s"}`}
+                            onClick={() => set({ valorant_maps: [...maps, { map_name: firstUnusedMap(maps), rounds_team1: "", rounds_team2: "" }] })}>
                       <Icon name="plus" size={12}/> Add map
                     </button>
                   </div>
-                  <div className="col" style={{ gap: 8, marginBottom: 24 }}>
-                    {form.valorant_maps.map((m, i) => (
+                  <div className="col" style={{ gap: 8, marginBottom: 12 }}>
+                    {maps.map((m, i) => {
+                      const scoreOk = isValidValorantMapScore(m.rounds_team1, m.rounds_team2);
+                      const usedElsewhere = new Set(maps.filter((_, j) => j !== i).map((x) => x.map_name));
+                      const badStyle = { border: "1px solid var(--crim)" };
+                      return (
                       <div key={i} className="card" style={{ padding: "10px 14px", display: "grid", gridTemplateColumns: "1fr 80px 80px 24px", gap: 14, alignItems: "center" }}>
                         <select className="select" value={m.map_name}
-                                onChange={(e) => {
-                                  const next = [...form.valorant_maps]; next[i] = { ...next[i], map_name: e.target.value }; set({ valorant_maps: next });
-                                }}>
-                          {VALORANT_MAPS.map((x) => <option key={x}>{x}</option>)}
+                                onChange={(e) => { const next = [...maps]; next[i] = { ...next[i], map_name: e.target.value }; set({ valorant_maps: next }); }}>
+                          {VALORANT_MAPS.filter((x) => x === m.map_name || !usedElsewhere.has(x)).map((x) => <option key={x}>{x}</option>)}
                         </select>
-                        <input className="input" type="number" value={m.rounds_team1}
-                               onChange={(e) => { const next = [...form.valorant_maps]; next[i] = { ...next[i], rounds_team1: e.target.value }; set({ valorant_maps: next }); }} />
-                        <input className="input" type="number" value={m.rounds_team2}
-                               onChange={(e) => { const next = [...form.valorant_maps]; next[i] = { ...next[i], rounds_team2: e.target.value }; set({ valorant_maps: next }); }} />
+                        <input className="input" type="number" min="0" value={m.rounds_team1} style={scoreOk ? undefined : badStyle}
+                               onChange={(e) => { const next = [...maps]; next[i] = { ...next[i], rounds_team1: e.target.value }; set({ valorant_maps: next }); }} />
+                        <input className="input" type="number" min="0" value={m.rounds_team2} style={scoreOk ? undefined : badStyle}
+                               onChange={(e) => { const next = [...maps]; next[i] = { ...next[i], rounds_team2: e.target.value }; set({ valorant_maps: next }); }} />
                         <button className="btn-icon" style={{ background: "transparent", border: 0, color: "var(--fg-3)", cursor: "pointer" }}
-                                onClick={() => set({ valorant_maps: form.valorant_maps.filter((_, j) => j !== i) })}>
+                                onClick={() => set({ valorant_maps: maps.filter((_, j) => j !== i) })}>
                           <Icon name="cross" size={14} />
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
+                  {issues.length > 0 ? (
+                    <div className="card" style={{ padding: "10px 14px", marginBottom: 24, borderColor: "var(--crim-line)", background: "var(--crim-soft)" }}>
+                      {issues.map((msg, k) => (
+                        <div key={k} className="mono" style={{ fontSize: 11, color: "var(--crim)" }}>• {msg}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mono" style={{ fontSize: 11, color: "var(--fg-4)", marginBottom: 24 }}>
+                      Maps = games played ({n}). Valid scores: 13-0 … 13-11, or OT 14-12, 15-13, 16-14 …
+                    </div>
+                  )}
                 </>
-              )}
+                );
+              })()}
 
               <div className="card" style={{ padding: 14, marginBottom: 24, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <div>
@@ -1000,7 +1285,7 @@ function RosterFields({ form, set }) {
   return (
     <>
       <SectionLabel n="02.A" label="Team" />
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 240px", gap: 14, marginBottom: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 240px", gap: 14, marginBottom: 10 }}>
         <FormField label="Team name" req>
           <input className="input" value={form.roster_team.name}
                  onChange={(e) => set({ roster_team: { ...form.roster_team, name: e.target.value } })} placeholder="MED-IA" />
@@ -1012,6 +1297,31 @@ function RosterFields({ form, set }) {
                        label="Pick or upload" small />
         </FormField>
       </div>
+      {/* Team logos already in the brand library — one click fills name + logo. */}
+      {(form.team_logo_library || []).length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 24 }}>
+          <span className="mono" style={{ fontSize: 10, color: "var(--fg-4)", letterSpacing: "0.08em" }}>QUICK PICK:</span>
+          {form.team_logo_library.map((t) => {
+            const on = form.roster_team.logo_asset && form.roster_team.logo_asset.asset_id === t.asset.asset_id;
+            return (
+              <button key={t.asset.asset_id} title={`Use ${t.key} + its logo`}
+                onClick={() => set({ roster_team: { ...form.roster_team, name: t.key, logo_asset: t.asset } })}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.06em",
+                  padding: "2px 8px 2px 3px", background: on ? "var(--crim-soft)" : "transparent",
+                  border: "1px solid " + (on ? "var(--crim-line)" : "var(--line)"), borderRadius: 999,
+                  color: "var(--fg-2)", cursor: "pointer",
+                }}>
+                {t.asset.signed_url
+                  ? <img src={t.asset.signed_url} alt="" style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", background: "var(--surface-3)" }} />
+                  : <span style={{ width: 18, height: 18, borderRadius: "50%", background: "var(--surface-3)" }} />}
+                {t.key}
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 28 }}>
         <FormField label="Season">
           <input className="input" value={form.roster_season} onChange={(e) => set({ roster_season: e.target.value })} placeholder="2026 Summer" />
@@ -1026,20 +1336,25 @@ function RosterFields({ form, set }) {
       </div>
       <div className="col" style={{ gap: 8 }}>
         {form.roster_players.map((p, i) => (
-          <div key={i} className="card" style={{ padding: 12, display: "grid", gridTemplateColumns: "60px 1fr 140px 130px", gap: 12, alignItems: "center" }}>
-            <AssetUpload assetType="player-images" orgId={form.org_id}
-                         asset={p.image_asset}
-                         onChange={(a) => setPlayer(i, { image_asset: a })}
-                         square />
-            <input className="input" value={p.ign} placeholder="IGN" onChange={(e) => setPlayer(i, { ign: e.target.value })} />
-            <select className="select" value={p.role} onChange={(e) => setPlayer(i, { role: e.target.value })}>
-              {LOL_ROLES.map((r) => <option key={r}>{r}</option>)}
-            </select>
-            <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6, color: p.is_new_signing ? "var(--cy)" : "var(--fg-3)", cursor: "pointer" }}>
-              <input type="checkbox" checked={p.is_new_signing} onChange={(e) => setPlayer(i, { is_new_signing: e.target.checked })}
-                     style={{ accentColor: "var(--cy)" }} />
-              New signing
-            </label>
+          <div key={i} className="card" style={{ padding: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 140px 130px", gap: 12, alignItems: "center" }}>
+              <AssetUpload assetType="player-images" orgId={form.org_id}
+                           asset={p.image_asset}
+                           onChange={(a) => setPlayer(i, { image_asset: a })}
+                           square />
+              <input className="input" value={p.ign} placeholder="IGN" onChange={(e) => setPlayer(i, { ign: e.target.value })} />
+              <select className="select" value={coerceRole(p.role, form.game, i)} onChange={(e) => setPlayer(i, { role: e.target.value })}>
+                {rolesForGame(form.game).map((r) => <option key={r}>{r}</option>)}
+              </select>
+              <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6, color: p.is_new_signing ? "var(--cy)" : "var(--fg-3)", cursor: "pointer" }}>
+                <input type="checkbox" checked={p.is_new_signing} onChange={(e) => setPlayer(i, { is_new_signing: e.target.checked })}
+                       style={{ accentColor: "var(--cy)" }} />
+                New signing
+              </label>
+            </div>
+            <ImageQuickPick library={form.player_image_library}
+                            selectedId={p.image_asset && p.image_asset.asset_id}
+                            onPick={(a) => setPlayer(i, { image_asset: a })} />
           </div>
         ))}
       </div>
@@ -1069,6 +1384,11 @@ function RosterPhotoStatus({ form }) {
   );
 }
 
+const TOURNAMENT_FORMATS = [
+  "Single Elimination", "Double Elimination", "Round Robin", "Swiss",
+  "Groups + Playoffs", "GSL Groups", "League / Round Robin",
+];
+
 function AnnouncementFields({ form, set }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
@@ -1085,16 +1405,49 @@ function AnnouncementFields({ form, set }) {
         <input className="input" type="number" value={form.ann_teams_count} onChange={(e) => set({ ann_teams_count: e.target.value })} placeholder="16" />
       </FormField>
       <FormField label="Format">
-        <input className="input" value={form.ann_format} onChange={(e) => set({ ann_format: e.target.value })} placeholder="Double elim" />
+        <select className="select" value={form.ann_format} onChange={(e) => set({ ann_format: e.target.value })}>
+          <option value="">— select format —</option>
+          {TOURNAMENT_FORMATS.map((f) => <option key={f} value={f}>{f}</option>)}
+        </select>
       </FormField>
       <FormField label="">‎</FormField>
       <FormField label="Tagline" req>
-        <input className="input" value={form.ann_tagline} onChange={(e) => set({ ann_tagline: e.target.value })} placeholder="The road to glory begins." />
+        <div className="row" style={{ gap: 6 }}>
+          <input className="input" style={{ flex: 1 }} value={form.ann_tagline} onChange={(e) => set({ ann_tagline: e.target.value })} placeholder="The road to glory begins." />
+          <TaglineRollButton posterType="tournament_announcement" set={set} withSub />
+        </div>
       </FormField>
       <FormField label="Sub-tagline">
         <input className="input" value={form.ann_sub_tagline} onChange={(e) => set({ ann_sub_tagline: e.target.value })} placeholder="16 teams. One throne." />
       </FormField>
     </div>
+  );
+}
+
+// "🎲 Random" — fills the tagline field (and sub-tagline, when `withSub`) from the
+// curated backend bank, for users who'd rather not write their own. Re-click to
+// re-roll; the value stays editable afterward.
+function TaglineRollButton({ posterType, set, withSub }) {
+  const [busy, setBusy] = React.useState(false);
+  const roll = async () => {
+    setBusy(true);
+    try {
+      const r = await window.api.randomTagline(posterType);
+      const patch = { ann_tagline: r.tagline || "" };
+      if (withSub) patch.ann_sub_tagline = r.sub_tagline || "";
+      set(patch);
+    } catch (e) {
+      if (window.toast && window.toast.error) window.toast.error("Couldn't fetch a tagline: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button type="button" className="btn btn-ghost" onClick={roll} disabled={busy}
+            title="Fill with a random tagline from the bank"
+            style={{ padding: "0 12px", whiteSpace: "nowrap", flexShrink: 0 }}>
+      🎲 {busy ? "…" : "Random"}
+    </button>
   );
 }
 
@@ -1111,7 +1464,10 @@ function BannerFields({ form, set }) {
         <input className="input" value={form.ann_prize_pool} onChange={(e) => set({ ann_prize_pool: e.target.value })} placeholder="$50,000" />
       </FormField>
       <FormField label="Tagline" req style={{ gridColumn: "span 3" }}>
-        <input className="input" value={form.ann_tagline} onChange={(e) => set({ ann_tagline: e.target.value })} placeholder="The road to glory begins." />
+        <div className="row" style={{ gap: 6 }}>
+          <input className="input" style={{ flex: 1 }} value={form.ann_tagline} onChange={(e) => set({ ann_tagline: e.target.value })} placeholder="The road to glory begins." />
+          <TaglineRollButton posterType="tournament_banner" set={set} />
+        </div>
       </FormField>
     </div>
   );
@@ -1189,42 +1545,28 @@ function Step3({ form, set }) {
     }
   }, [form.style_mode]);
 
-  // In consistency mode, look up the Style DNA for the tournament the user
-  // actually typed (matched by its slug). Only that tournament's style shows.
+  // In consistency mode, load the org's whole saved-style library so the user can
+  // PICK any style — decoupled from the poster's tournament name. (Roster Reveal
+  // has no tournament name, and a style may come from a different tournament.)
   React.useEffect(() => {
     if (form.style_mode !== "consistency") return;
-    const tid = slugify(form.tournament_name);
     let cancelled = false;
-
-    if (!tid || tid === "_standalone") {
-      set({ style_dna: null, style_dna_status: null, style_dna_loading: false });
-      return;
-    }
-
     set({ style_dna_loading: true });
-    window.api.getStyleDna({ orgId: form.org_id, tournamentId: tid })
-      .then((dna) => {
+    window.api.listStyleDnas({ orgId: form.org_id })
+      .then((res) => {
         if (cancelled) return;
-        set({
-          style_dna: dna,
-          style_dna_status: dna ? dna.status : null,
-          tournament_id: dna ? tid : "",
-          style_dna_loading: false,
-        });
+        set({ style_library: res.style_dnas || [], style_dna_loading: false });
       })
-      .catch(() => {
-        if (cancelled) return;
-        set({ style_dna: null, style_dna_status: null, style_dna_loading: false });
-      });
+      .catch(() => { if (!cancelled) set({ style_library: [], style_dna_loading: false }); });
     return () => { cancelled = true; };
-  }, [form.style_mode, form.tournament_name, form.org_id]);
+  }, [form.style_mode, form.org_id]);
 
   return (
     <>
       <div style={{ display: "flex", gap: 0, marginBottom: 28, background: "var(--surface)", padding: 4, borderRadius: 10, border: "1px solid var(--line)" }}>
         {[
           { id: "fresh", label: "Fresh look", desc: "Define a new look for this poster" },
-          { id: "consistency", label: "Match my previous posters", desc: "Use the tournament's approved Style DNA" },
+          { id: "consistency", label: "Match a saved style", desc: "Reuse any saved Style DNA from your library" },
         ].filter((m) => m.id !== "consistency" || features().consistency).map((m) => {
           const on = form.style_mode === m.id;
           return (
@@ -1261,9 +1603,15 @@ function Step3({ form, set }) {
                     outline: on ? "3px solid var(--crim-soft)" : "none", outlineOffset: -1,
                     textAlign: "left", overflow: "hidden",
                   }}>
-                  <div style={{ height: 90, background: `linear-gradient(140deg, ${v.grad[0]}, ${v.grad[1]})`, position: "relative", overflow: "hidden" }}>
-                    <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(0deg, rgba(0,0,0,0.1) 0 1px, transparent 1px 3px)" }} />
-                    {on && <div style={{ position: "absolute", top: 8, right: 8, width: 22, height: 22, borderRadius: "50%", background: "var(--crim)", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ height: 96, background: `linear-gradient(140deg, ${v.grad[0]}, ${v.grad[1]})`, position: "relative", overflow: "hidden" }}>
+                    {/* Real generated example for this vibe; falls back to the gradient if missing. */}
+                    <img src={`assets/vibes/${v.id}.png`} alt="" aria-hidden="true"
+                         onError={(e) => { e.currentTarget.style.display = "none"; }}
+                         style={{ position: "absolute", inset: 0, width: "100%", height: "100%",
+                                  objectFit: "cover", objectPosition: "center 35%",
+                                  opacity: on ? 1 : 0.9, transition: "opacity .3s" }} />
+                    <div style={{ position: "absolute", inset: 0, backgroundImage: "repeating-linear-gradient(0deg, rgba(0,0,0,0.08) 0 1px, transparent 1px 3px)" }} />
+                    {on && <div style={{ position: "absolute", top: 8, right: 8, width: 22, height: 22, borderRadius: "50%", background: "var(--crim)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(0,0,0,0.5)" }}>
                       <Icon name="check" size={12}/>
                     </div>}
                   </div>
@@ -1276,27 +1624,48 @@ function Step3({ form, set }) {
             })}
           </div>
 
-          <SectionLabel n="03.B" label="Dominant color" />
+          <SectionLabel n="03.B" label="Color" />
           <div className="card" style={{ padding: 18, marginBottom: 32 }}>
-            <div className="row" style={{ gap: 14 }}>
-              <div style={{ width: 56, height: 56, borderRadius: 10, background: form.color, border: "2px solid var(--line-strong)", boxShadow: `0 0 30px ${form.color}55` }} />
-              <div className="col" style={{ flex: 1, gap: 8 }}>
-                <div className="row" style={{ gap: 8 }}>
-                  <input className="input mono" style={{ width: 130, fontFamily: "var(--f-mono)", textTransform: "uppercase" }} value={form.color} onChange={(e) => set({ color: e.target.value })} />
-                  <input type="color" value={form.color} onChange={(e) => set({ color: e.target.value })}
-                    style={{ width: 40, height: 40, padding: 0, border: "1px solid var(--line)", borderRadius: 8, background: "transparent" }} />
-                  <div style={{ width: 1, height: 28, background: "var(--line)" }} />
-                  <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-                    {COLOR_PRESETS.map((c) => (
-                      <button key={c} onClick={() => set({ color: c })}
-                        style={{ width: 28, height: 28, borderRadius: 6, background: c, border: "1px solid var(--line-strong)",
-                          outline: form.color.toLowerCase() === c.toLowerCase() ? "2px solid white" : "none", outlineOffset: 1, cursor: "pointer" }} />
-                    ))}
-                  </div>
-                </div>
-                <div className="hint" style={{ marginTop: 2 }}>Used as the dominant hue across the entire poster.</div>
-              </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: form.color_mode === "dominant" ? 16 : 0 }}>
+              {[
+                { id: "dominant", title: "Dominant color", desc: "Force one color across the whole poster." },
+                { id: "auto", title: "Match background", desc: "Let the AI take colors from the background." },
+              ].map((m) => {
+                const on = form.color_mode === m.id;
+                return (
+                  <button key={m.id} onClick={() => set({ color_mode: m.id })} className="card"
+                    style={{ padding: 14, cursor: "pointer", background: "transparent",
+                      borderColor: on ? "var(--crim)" : "var(--line)",
+                      outline: on ? "3px solid var(--crim-soft)" : "none", outlineOffset: -1, textAlign: "left" }}>
+                    <div style={{ fontFamily: "var(--f-display)", fontSize: 13.5 }}>{m.title}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--fg-3)", marginTop: 4 }}>{m.desc}</div>
+                  </button>
+                );
+              })}
             </div>
+            {form.color_mode === "dominant" ? (
+              <div className="row" style={{ gap: 14 }}>
+                <div style={{ width: 56, height: 56, borderRadius: 10, background: form.color, border: "2px solid var(--line-strong)", boxShadow: `0 0 30px ${form.color}55` }} />
+                <div className="col" style={{ flex: 1, gap: 8 }}>
+                  <div className="row" style={{ gap: 8 }}>
+                    <input className="input mono" style={{ width: 130, fontFamily: "var(--f-mono)", textTransform: "uppercase" }} value={form.color} onChange={(e) => set({ color: e.target.value })} />
+                    <input type="color" value={form.color} onChange={(e) => set({ color: e.target.value })}
+                      style={{ width: 40, height: 40, padding: 0, border: "1px solid var(--line)", borderRadius: 8, background: "transparent" }} />
+                    <div style={{ width: 1, height: 28, background: "var(--line)" }} />
+                    <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                      {COLOR_PRESETS.map((c) => (
+                        <button key={c} onClick={() => set({ color: c })}
+                          style={{ width: 28, height: 28, borderRadius: 6, background: c, border: "1px solid var(--line-strong)",
+                            outline: form.color.toLowerCase() === c.toLowerCase() ? "2px solid white" : "none", outlineOffset: 1, cursor: "pointer" }} />
+                      ))}
+                    </div>
+                  </div>
+                  <div className="hint" style={{ marginTop: 2 }}>Used as the dominant hue across the entire poster.</div>
+                </div>
+              </div>
+            ) : (
+              <div className="hint">The poster's palette is pulled from the AI-generated background — no single forced color. Works best with an AI-generated or uploaded background.</div>
+            )}
           </div>
 
           <SectionLabel n="03.C" label="Energy" />
@@ -1328,54 +1697,51 @@ function Step3({ form, set }) {
           </div>
         </>
       ) : (
-        <ConsistencyPanel form={form} />
+        <ConsistencyPanel form={form} set={set} />
       )}
     </>
   );
 }
 
-function ConsistencyPanel({ form }) {
-  const tid = slugify(form.tournament_name);
+function ConsistencyPanel({ form, set }) {
+  const lib = form.style_library || [];
 
-  // No tournament name typed yet — can't match a style.
-  if (!tid || tid === "_standalone") {
-    return (
-      <div className="card" style={{ padding: 24, borderColor: "var(--line)" }}>
-        <div style={{ fontFamily: "var(--f-display)", fontSize: 16, marginBottom: 8 }}>Enter a tournament name first</div>
-        <div className="hint">
-          Go back to <b>Step 2</b> and type the tournament name. If a Style DNA was saved for that exact
-          tournament, it appears here and is applied to this poster.
-        </div>
+  const pick = (tid) => {
+    const dna = tid ? (lib.find((d) => d.tournament_id === tid) || null) : null;
+    set({ style_dna: dna, style_dna_status: dna ? dna.status : null, tournament_id: dna ? tid : "" });
+  };
+
+  return (
+    <div className="col" style={{ gap: 18 }}>
+      <div className="card" style={{ padding: 18 }}>
+        <div className="label" style={{ marginBottom: 8 }}>Choose a saved style</div>
+        {form.style_dna_loading ? (
+          <div className="mono" style={{ fontSize: 11, color: "var(--cy)", letterSpacing: "0.1em" }}>● LOADING YOUR STYLES…</div>
+        ) : lib.length === 0 ? (
+          <div className="hint">
+            No saved styles yet. Generate a poster, then click <b>“Extract &amp; save as draft”</b> on the result to
+            save its style — it'll then be reusable here on <b>any</b> poster type.
+          </div>
+        ) : (
+          <>
+            <select className="select" value={form.style_dna ? form.style_dna.tournament_id : ""}
+                    onChange={(e) => pick(e.target.value)}>
+              <option value="">— none (use fresh styling) —</option>
+              {lib.map((d) => (
+                <option key={d.tournament_id} value={d.tournament_id}>
+                  {d.tournament_id} · {d.status}
+                </option>
+              ))}
+            </select>
+            <div className="hint" style={{ marginTop: 8 }}>
+              Any saved style applies to any poster — including Roster Reveal, which has no tournament name.
+            </div>
+          </>
+        )}
       </div>
-    );
-  }
-
-  if (form.style_dna_loading) {
-    return (
-      <div className="card" style={{ padding: 24, borderColor: "var(--cy-line)" }}>
-        <div className="mono" style={{ fontSize: 11, color: "var(--cy)", letterSpacing: "0.1em" }}>
-          ● MATCHING STYLE FOR “{form.tournament_name}”…
-        </div>
-      </div>
-    );
-  }
-
-  // Name typed, but no DNA stored for it.
-  if (!form.style_dna) {
-    return (
-      <div className="card" style={{ padding: 24, borderColor: "var(--line)" }}>
-        <div style={{ fontFamily: "var(--f-display)", fontSize: 16, marginBottom: 8 }}>
-          No saved style for “{form.tournament_name}”
-        </div>
-        <div className="hint">
-          No Style DNA is stored for tournament <code>{tid}</code>. This poster will use fresh-mode styling.
-          Generate it, then click <b>"Extract &amp; save as draft"</b> on the result to create one for this tournament.
-        </div>
-      </div>
-    );
-  }
-
-  return <DnaCard form={form} />;
+      {form.style_dna && <DnaCard form={form} />}
+    </div>
+  );
 }
 
 function DnaCard({ form }) {
@@ -1574,11 +1940,16 @@ function Step4({ form, set }) {
             on={form.featured_player}
             onChange={(v) => set({ featured_player: v })}
             expand={form.featured_player && (
-              <div className="row" style={{ gap: 14 }}>
-                <AssetUpload assetType="player-images" orgId={form.org_id}
-                             asset={form.featured_player_asset}
-                             onChange={(a) => set({ featured_player_asset: a })}
-                             label="Pick or upload player photo" wide />
+              <div className="col" style={{ gap: 4 }}>
+                <div className="row" style={{ gap: 14 }}>
+                  <AssetUpload assetType="player-images" orgId={form.org_id}
+                               asset={form.featured_player_asset}
+                               onChange={(a) => set({ featured_player_asset: a })}
+                               label="Pick or upload player photo" wide />
+                </div>
+                <ImageQuickPick library={form.player_image_library}
+                                selectedId={form.featured_player_asset && form.featured_player_asset.asset_id}
+                                onPick={(a) => set({ featured_player_asset: a })} />
               </div>
             )}
           />
@@ -1670,10 +2041,20 @@ function Step4({ form, set }) {
 }
 
 function BackgroundSourceCard({ form, set }) {
+  // The fine-tuned background model is trained on League of Legends key art only,
+  // so AI-generated backgrounds are LoL-only for now; Valorant keeps the SOON tag.
+  const aiAvailable = form.game === "league_of_legends";
+  // "System pool" was removed as a choice — coerce any stale draft to a valid one.
+  React.useEffect(() => {
+    if (form.background_source === "system_pool") set({ background_source: "custom" });
+  }, [form.background_source]);
   const sources = [
-    { id: "system_pool", title: "System pool", desc: "Use one of the built-in backgrounds.", icon: "layers" },
     { id: "custom",      title: "Upload your own", desc: "Provide the base canvas yourself.", icon: "upload" },
-    { id: "generated",   title: "AI-generated", desc: "Custom per poster · Runpod fine-tuned model.", icon: "sparkles", soon: true },
+    { id: "generated",   title: "AI-generated",
+      desc: aiAvailable
+        ? "Custom per poster · fine-tuned model."
+        : "League of Legends only for now.",
+      icon: "sparkles", soon: !aiAvailable },
   ];
   return (
     <div className="card" style={{ padding: 18 }}>
@@ -1682,7 +2063,7 @@ function BackgroundSourceCard({ form, set }) {
         <span className="mono" style={{ fontSize: 10.5, color: "var(--fg-4)", letterSpacing: "0.06em" }}>BASE CANVAS</span>
       </div>
       <div className="hint" style={{ marginBottom: 12 }}>The image the model uses as the starting canvas.</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
         {sources.map((s) => {
           const on = form.background_source === s.id;
           const disabled = !!s.soon;
@@ -1723,10 +2104,11 @@ function BackgroundSourceCard({ form, set }) {
         </div>
       )}
 
-      {form.background_source === "generated" && (
+      {form.background_source === "generated" && aiAvailable && (
         <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px dashed var(--line)", color: "var(--fg-3)", fontSize: 12 }}>
-          AI-generated backgrounds use a fine-tuned Stable Diffusion model on Runpod.
-          The plumbing is ready in <code>stages/background.py</code>; the call itself will be wired once the Runpod endpoint is live.
+          A unique background is generated for this poster with our fine-tuned League of Legends
+          key-art model, guided by your chosen vibe and energy. Most posters are served instantly;
+          the occasional first-of-its-kind combo may take a moment to create.
         </div>
       )}
     </div>
@@ -1802,7 +2184,7 @@ function Step5({ form, jump, onGenerate, generating, error }) {
     { step: 3, title: "Visual style", fields: form.style_mode === "fresh" ? [
       ["Mode", "Fresh look"],
       ["Vibe", VIBES.find((v) => v.id === form.vibe)?.label],
-      ["Dominant color", form.color],
+      ["Color", form.color_mode === "auto" ? "Match background (AI-picked)" : `Dominant · ${form.color}`],
       ["Energy", ENERGY.find((e) => e.id === form.energy)?.label],
     ] : [
       ["Mode", "Match previous posters"],
@@ -1817,8 +2199,8 @@ function Step5({ form, jump, onGenerate, generating, error }) {
         form.background_source === "custom"
           ? (form.custom_background_asset ? "Custom · 1 image" : "Custom · no image yet")
           : form.background_source === "generated"
-            ? "AI-generated (Runpod) — coming soon"
-            : "System pool"],
+            ? (form.game === "league_of_legends" ? "AI-generated · fine-tuned model" : "AI-generated — coming soon")
+            : "Upload your own"],
     ]},
   ];
 
@@ -1896,16 +2278,21 @@ function Step5({ form, jump, onGenerate, generating, error }) {
         <div className="ai-grid" style={{ position: "absolute", inset: 0, opacity: 0.3, pointerEvents: "none" }} />
         {(() => {
           const rosterBad = !rosterPhotoValid(form);
+          const mapsBad = !valorantMapsValid(form);
           const c = rosterPhotoCount(form);
           const note = rosterBad && form.poster_type === "roster_reveal"
             ? `Invalid roster — pick 0, 1, or all 5 player photos (currently ${c}).`
-            : null;
-          const blocked = rosterBad || insufficient;
+            : mapsBad
+              ? valorantMapIssues(form)[0]
+              : null;
+          const blocked = rosterBad || mapsBad || insufficient;
           const headline = rosterBad
             ? "Fix the roster photos to continue."
-            : insufficient
-              ? "Not enough Red Coins for this poster."
-              : "All looks good. Let's make this poster.";
+            : mapsBad
+              ? "Fix the Valorant map results to continue."
+              : insufficient
+                ? "Not enough Red Coins for this poster."
+                : "All looks good. Let's make this poster.";
           return (
             <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24 }}>
               <div>
@@ -1913,7 +2300,7 @@ function Step5({ form, jump, onGenerate, generating, error }) {
                 <div style={{ fontFamily: "var(--f-display)", fontSize: 24, letterSpacing: "-0.01em", marginBottom: 6 }}>
                   {headline}
                 </div>
-                {rosterBad && note && (
+                {note && (
                   <div className="mono" style={{ fontSize: 12, color: "var(--crim)", marginBottom: 8 }}>{note}</div>
                 )}
                 {insufficient && !rosterBad && (
@@ -2033,6 +2420,27 @@ function Wizard({ navigate }) {
         set({ sponsor_library: buildSponsorLibrary(res.assets || []) });
       })
       .catch(() => { /* non-fatal — quick-pick just stays empty */ });
+
+    // Player images already in the brand library, deduped to one chip per player.
+    window.api.listAssets({ orgId: form.org_id, assetType: "player-images", limit: 200 })
+      .then((res) => {
+        if (cancelled) return;
+        set({ player_image_library: buildPlayerImageLibrary(res.assets || []) });
+      })
+      .catch(() => { /* non-fatal — quick-pick just stays empty */ });
+
+    // Previously-used tournament names, for the name field's dropdown suggestions.
+    window.api.listPosters({ orgId: form.org_id, limit: 100 })
+      .then((res) => {
+        if (cancelled) return;
+        const seen = [];
+        for (const p of (res.posters || res.jobs || [])) {
+          const n = (p.input_data?.tournament?.name || p.tournament_id || "").trim();
+          if (n && n !== "_standalone" && !seen.includes(n)) seen.push(n);
+        }
+        set({ tournament_name_suggestions: seen.slice(0, 30) });
+      })
+      .catch(() => { /* non-fatal — the name field just has no suggestions */ });
     return () => { cancelled = true; };
   }, [form.org_id]);
 
@@ -2103,9 +2511,13 @@ function Wizard({ navigate }) {
 
       {step < 5 && (() => {
         const rosterBlocking = step === 2 && !rosterPhotoValid(form);
+        const mapsBlocking = step === 2 && !valorantMapsValid(form);
+        const blocking = rosterBlocking || mapsBlocking;
         const blockingHint = rosterBlocking
           ? `Roster reveal needs 0 (text-only), 1 (hero), or all 5 player photos — not ${rosterPhotoCount(form)}.`
-          : null;
+          : mapsBlocking
+            ? valorantMapIssues(form)[0]
+            : null;
         return (
           <div className="row" style={{
             marginTop: 36, paddingTop: 24, borderTop: "1px solid var(--line)",
@@ -2117,8 +2529,8 @@ function Wizard({ navigate }) {
             <div className="mono" style={{ fontSize: 11, color: blockingHint ? "var(--crim)" : "var(--fg-3)", letterSpacing: "0.06em", textAlign: "center" }}>
               {blockingHint || <>STEP {String(step).padStart(2, "0")} <span style={{ color: "var(--fg-4)" }}>/ 05</span></>}
             </div>
-            <button className="btn btn-primary" onClick={next} disabled={rosterBlocking}
-                    style={rosterBlocking ? { opacity: 0.45, cursor: "not-allowed" } : undefined}>
+            <button className="btn btn-primary" onClick={next} disabled={blocking}
+                    style={blocking ? { opacity: 0.45, cursor: "not-allowed" } : undefined}>
               Continue <Icon name="arrow_right" size={14} />
             </button>
           </div>

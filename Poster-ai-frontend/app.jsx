@@ -117,6 +117,9 @@ function App() {
   } else if (route.startsWith("/admin/usage")) {
     content = <AdminUsage navigate={navigate} />;
     crumbs = ["POSTER/AI", "ADMIN", "USAGE & BILLING"];
+  } else if (route.startsWith("/admin/metrics")) {
+    content = <Metrics navigate={navigate} />;
+    crumbs = ["POSTER/AI", "ADMIN", "CONTENT METRICS"];
   } else if (jobMatch) {
     const jobId = jobMatch[1] || null;
     content = <JobProgress navigate={navigate} jobId={jobId} />;

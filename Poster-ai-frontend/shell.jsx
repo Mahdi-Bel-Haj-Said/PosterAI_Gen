@@ -63,12 +63,11 @@ const NAV = [
   ]},
   { group: "Library", items: [
     { id: "brand",     label: "Brand library", icon: "image", route: "#/brand" },
-    { id: "tournaments", label: "Tournaments", icon: "trophy", route: "#/tournaments" },
   ]},
   { group: "Admin", items: [
     { id: "clients",   label: "Clients",    icon: "user",  route: "#/admin/clients" },
-    { id: "keys",      label: "API keys",   icon: "key",   route: "#/admin/keys" },
     { id: "usage",     label: "Usage & billing", icon: "chart", route: "#/admin/usage" },
+    { id: "metrics",   label: "Content metrics", icon: "chart", route: "#/admin/metrics" },
   ]},
 ];
 

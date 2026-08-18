@@ -296,10 +296,11 @@ function PosterResult({ navigate, jobId }) {
             </div>
           </div>
 
-          {/* User feedback on output quality — UI-only for now (persists to
-              localStorage). When /v1/posters/{id}/rating ships, the commit()
-              call inside RatingCard fires the API call. */}
-          <RatingCard jobId={job.job_id} />
+          {/* User feedback on output quality — 1–5 stars, persisted server-side
+              via /v1/posters/{id}/rating (feeds the Content metrics dashboard).
+              `initial` seeds from the job's stored rating so it survives reloads
+              and shows across devices. */}
+          <RatingCard jobId={job.job_id} initial={job.rating} />
 
           {/* Native posting — backend (Postiz) is fully wired but the OAuth /
               account-connection UX is being deferred. Render a fully-styled
@@ -516,31 +517,32 @@ function MetaRow({ label, value, children }) {
 
 
 // ---- RatingCard -------------------------------------------------------------
-// 1–10 star rating for the generated poster. UI-only for now — the score is
-// kept in localStorage keyed by job_id so testing across page refreshes works,
-// but no backend call is made. The persistence call-site is stubbed below;
-// swap the comment for a real `await window.api.rate(jobId, rating)` once the
-// /v1/posters/{id}/rating endpoint exists.
+// 1–5 star rating for the generated poster, persisted server-side via
+// POST /v1/posters/{id}/rating (feeds the Content metrics dashboard's avg
+// rating per vibe / energy / combo). `initial` seeds from the job's stored
+// rating; localStorage is a same-device cache/fallback.
 //
 // UX:
-//   * 10 outline stars in a row.
+//   * 5 outline stars in a row.
 //   * Hover lights them up to that index (preview, no commit).
-//   * Click sets the score and shows a "Thanks!" toast.
-//   * Clicking the same star you already chose CLEARS the rating (so a misclick
-//     isn't a permanent "2/10").
+//   * Click sets the score, saves it, and shows a "Thanks!" toast.
+//   * Clicking a star only ever SETS a rating (1–5). There's no "unrate" on the
+//     backend, so we don't send a clear — a re-click of a lower/higher star just
+//     overwrites. (The old localStorage-only "click to clear" is dropped.)
 //   * Keyboard support: each star is a real <button>, so Tab + Space/Enter works.
-//   * "Reset" link appears next to the score once a rating is set.
 
-function RatingCard({ jobId }) {
+function RatingCard({ jobId, initial }) {
   const STORAGE_KEY = jobId ? `poster-rating:${jobId}` : null;
+  const MAX = 5;
 
-  // Load any persisted score for THIS specific job. Bounded to 0..10 so a
-  // tampered localStorage entry can't push the UI into a weird state.
+  // Prefer the server-persisted rating; fall back to a same-device localStorage
+  // cache. Bounded to 0..MAX so a tampered entry can't distort the UI.
   const _readStored = () => {
+    if (Number.isFinite(initial) && initial >= 1 && initial <= MAX) return initial;
     if (!STORAGE_KEY) return 0;
     try {
       const v = parseInt(window.localStorage.getItem(STORAGE_KEY) || "0", 10);
-      return Number.isFinite(v) && v >= 0 && v <= 10 ? v : 0;
+      return Number.isFinite(v) && v >= 0 && v <= MAX ? v : 0;
     } catch (_) {
       return 0;
     }
@@ -548,34 +550,35 @@ function RatingCard({ jobId }) {
 
   const [rating, setRating] = React.useState(_readStored);
   const [hover, setHover]   = React.useState(0); // 0 = not hovering
+  const [saving, setSaving] = React.useState(false);
 
-  // If we ever re-render against a different jobId (unlikely on this screen,
-  // but cheap to guard), re-read from storage so we don't show stale stars.
-  React.useEffect(() => { setRating(_readStored()); /* eslint-disable-line */ }, [jobId]);
+  // Re-seed if the job (or its server rating) changes under us.
+  React.useEffect(() => { setRating(_readStored()); /* eslint-disable-line */ }, [jobId, initial]);
 
-  const commit = (value) => {
-    // Click on the same star you already picked = clear.
-    const next = value === rating ? 0 : value;
-    setRating(next);
+  const commit = async (value) => {
+    if (value < 1 || value > MAX || value === rating) return;
+    setRating(value);
     try {
-      if (STORAGE_KEY) {
-        if (next > 0) window.localStorage.setItem(STORAGE_KEY, String(next));
-        else          window.localStorage.removeItem(STORAGE_KEY);
-      }
+      if (STORAGE_KEY) window.localStorage.setItem(STORAGE_KEY, String(value));
     } catch (_) { /* private-mode / quota — non-fatal */ }
-    // TODO(backend): once /v1/posters/{id}/rating exists, fire-and-forget:
-    //   window.api.ratePoster(jobId, next).catch(() => {});
-    if (next > 0) {
-      window.toast.success(`Thanks! You rated this poster ${next}/10.`);
+    setSaving(true);
+    try {
+      await window.api.ratePoster(jobId, value);
+      window.toast.success(`Thanks! You rated this poster ${value}/${MAX}.`);
+    } catch (e) {
+      window.toast.error(`Couldn't save rating: ${e.message}`);
+    } finally {
+      setSaving(false);
     }
   };
 
   const display = hover || rating;  // hover preview wins while present
   const labelFor = (v) => {
     if (v <= 0) return "Click a star to rate";
-    if (v <= 3) return "Needs work";
-    if (v <= 6) return "Decent";
-    if (v <= 8) return "Strong";
+    if (v <= 1) return "Needs work";
+    if (v <= 2) return "Meh";
+    if (v <= 3) return "Decent";
+    if (v <= 4) return "Strong";
     return "Excellent";
   };
 
@@ -592,7 +595,7 @@ function RatingCard({ jobId }) {
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 600, fontSize: 13.5 }}>Rate this poster</div>
           <div className="hint" style={{ marginTop: 2 }}>
-            Your score helps us tune generation quality. 1 = nope, 10 = nailed it.
+            Your score helps us tune generation quality. 1 = nope, 5 = nailed it.
           </div>
         </div>
       </div>
@@ -600,12 +603,12 @@ function RatingCard({ jobId }) {
       {/* Star row */}
       <div
         role="radiogroup"
-        aria-label="Poster rating, 1 to 10"
+        aria-label={`Poster rating, 1 to ${MAX}`}
         onMouseLeave={() => setHover(0)}
         className="row"
-        style={{ gap: 3, justifyContent: "space-between", marginBottom: 10 }}
+        style={{ gap: 6, justifyContent: "center", marginBottom: 10 }}
       >
-        {Array.from({ length: 10 }, (_, i) => {
+        {Array.from({ length: MAX }, (_, i) => {
           const value = i + 1;
           const lit = value <= display;
           return (
@@ -614,8 +617,9 @@ function RatingCard({ jobId }) {
               type="button"
               role="radio"
               aria-checked={rating === value}
-              aria-label={`${value} out of 10`}
-              title={`${value}/10 — ${labelFor(value)}`}
+              aria-label={`${value} out of ${MAX}`}
+              title={`${value}/${MAX} — ${labelFor(value)}`}
+              disabled={saving}
               onMouseEnter={() => setHover(value)}
               onFocus={() => setHover(value)}
               onBlur={() => setHover(0)}
@@ -624,35 +628,24 @@ function RatingCard({ jobId }) {
                 background: "transparent",
                 border: 0,
                 padding: 2,
-                cursor: "pointer",
+                cursor: saving ? "default" : "pointer",
                 color: lit ? "var(--crim)" : "var(--fg-4)",
                 transition: "color 120ms ease, transform 120ms ease",
                 transform: hover === value ? "scale(1.18)" : "scale(1)",
                 lineHeight: 0,
               }}
             >
-              <Icon name="star" size={22} />
+              <Icon name="star" size={28} />
             </button>
           );
         })}
       </div>
 
       {/* Score readout */}
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+      <div className="row" style={{ justifyContent: "center", alignItems: "center" }}>
         <span className="mono" style={{ fontSize: 10.5, color: "var(--fg-3)", letterSpacing: "0.06em" }}>
-          {display > 0 ? `${display}/10 · ${labelFor(display).toUpperCase()}` : "AWAITING RATING"}
+          {saving ? "SAVING…" : display > 0 ? `${display}/${MAX} · ${labelFor(display).toUpperCase()}` : "AWAITING RATING"}
         </span>
-        {rating > 0 && (
-          <button
-            type="button"
-            onClick={() => commit(rating)}
-            className="btn btn-ghost"
-            style={{ padding: "2px 8px", fontSize: 11 }}
-            title="Clear your rating"
-          >
-            <Icon name="cross" size={10} /> Clear
-          </button>
-        )}
       </div>
     </div>
   );

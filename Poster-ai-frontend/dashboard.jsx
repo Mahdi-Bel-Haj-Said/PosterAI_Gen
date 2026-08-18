@@ -279,7 +279,7 @@ function Dashboard({ navigate }) {
             <span style={{
               background: "linear-gradient(90deg, var(--crim) 0%, var(--cy) 100%)",
               WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent"
-            }}>in 30 seconds.</span>
+            }}>in 100 seconds.</span>
           </h1>
           <p style={{ color: "var(--fg-3)", maxWidth: 480, marginTop: 14, fontSize: 15, lineHeight: 1.5 }}>
             Gameday, results, roster reveals — publish-ready socials from a 5-step form.

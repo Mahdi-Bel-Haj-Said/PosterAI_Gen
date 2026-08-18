@@ -10,6 +10,12 @@ const STAGES = [
 
 const STATUS_TO_INDEX = STAGES.reduce((acc, s, i) => { acc[s.id] = i; return acc; }, {});
 
+// After SLOW_HINT_S show a "taking longer" note; after TIMEOUT_S surface a clear
+// "may have stalled" state with an escape, so the user is never stuck on a silent
+// "queued" screen. Polling continues in the background either way.
+const SLOW_HINT_S = 90;
+const TIMEOUT_S = 480; // 8 min — covers a cold live-background (~6-7 min) + edit
+
 function JobProgress({ navigate, jobId }) {
   const [job, setJob] = React.useState(null);
   const [error, setError] = React.useState(null);
@@ -60,13 +66,27 @@ function JobProgress({ navigate, jobId }) {
   const stageIdx = STATUS_TO_INDEX[status] ?? 0;
   const current = STAGES[stageIdx];
 
+  const inFlight = status !== "completed" && status !== "failed";
+  const timedOut = inFlight && elapsed >= TIMEOUT_S;
+  const headline = status === "failed"
+    ? "Generation failed"
+    : timedOut ? "Still working — this is taking a while" : "Generating your poster";
+  const subtitle = status === "failed"
+    ? "Something went wrong — see the error below."
+    : timedOut
+      ? `It's been over ${Math.floor(TIMEOUT_S / 60)} minutes — it may still finish, or it may have stalled. You can keep waiting, or start over below.`
+      : elapsed >= SLOW_HINT_S
+        ? "Taking a little longer than usual — a fresh AI background can take a few minutes. You can navigate away; the dashboard will show it when ready."
+        : "Usually 20–60 seconds. You can navigate away — the dashboard will show it when ready.";
+  const showRetry = status === "failed" || timedOut;
+
   return (
     <div>
       <div className="page-header" style={{ marginBottom: 28 }}>
         <div>
           <div className="eyebrow" style={{ marginBottom: 8 }}>JOB <span className="mono" style={{ color: "var(--fg-2)" }}>{jobId ? jobId.slice(0, 10) : "—"}</span></div>
-          <h1>{status === "failed" ? "Generation failed" : "Generating your poster"}</h1>
-          <p>{status === "failed" ? "Something went wrong — see the error below." : "Usually 20–60 seconds. You can navigate away — the dashboard will show it when ready."}</p>
+          <h1>{headline}</h1>
+          <p>{subtitle}</p>
         </div>
       </div>
 
@@ -127,6 +147,16 @@ function JobProgress({ navigate, jobId }) {
             </div>
           </div>
 
+          {timedOut && !error && (
+            <div className="card" style={{ padding: 16, borderColor: "#d9a441", background: "rgba(217,164,65,0.08)" }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Taking longer than expected</div>
+              <div style={{ fontSize: 12.5, color: "var(--fg-3)" }}>
+                This job has been running over {Math.floor(TIMEOUT_S / 60)} minutes. It may still finish
+                (the background model can be busy), or it may have stalled — you can keep waiting, or start over.
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="card" style={{ padding: 16, borderColor: "var(--crim)", background: "var(--crim-soft)" }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Error</div>
@@ -148,7 +178,7 @@ function JobProgress({ navigate, jobId }) {
           )}
 
           <div className="row" style={{ gap: 10 }}>
-            {status === "failed" ? (
+            {showRetry ? (
               <>
                 {/* Reopen the wizard at the background step with all inputs still
                     filled in, so the user just swaps the background and retries. */}

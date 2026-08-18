@@ -179,6 +179,23 @@ const api = {
     return _json(res);
   },
 
+  // Admin: content analytics — vibe/energy/combo/type/quality/source distribution
+  // + ratings. One call drives the whole Metrics dashboard.
+  async getContentMetrics() {
+    const res = await _fetch(`${API_BASE}/v1/admin/metrics`);
+    return _json(res);
+  },
+
+  // Save the user's 1–5 rating of a completed poster (feeds content metrics).
+  async ratePoster(jobId, rating) {
+    const res = await _fetch(`${API_BASE}/v1/posters/${encodeURIComponent(jobId)}/rating`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rating }),
+    });
+    return _json(res);
+  },
+
   // Provider: set a client's commercial metadata (service type, fee, name).
   // Use platformId "__none__" for the dev / no-API-key client.
   async setPlatform({ platformId, name, service_type, monthly_fee_usd, economics } = {}) {
@@ -188,6 +205,14 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, service_type, monthly_fee_usd, economics }),
     });
+    return _json(res);
+  },
+
+  // Curated tagline bank — the "random tagline" button fetches one to fill the
+  // field. Static content; no org/auth. Call again to re-roll.
+  async randomTagline(posterType = "tournament_announcement") {
+    const params = new URLSearchParams({ poster_type: posterType });
+    const res = await _fetch(`${API_BASE}/v1/taglines/random?${params.toString()}`);
     return _json(res);
   },
 
