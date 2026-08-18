@@ -1,0 +1,9 @@
+runpod>=1.6.0
+# Qwen-Image-2512 support requires a recent diffusers. If the base model fails to
+# load, upgrade to the latest (or install from git: git+https://github.com/huggingface/diffusers).
+diffusers>=0.32.0
+transformers>=4.45.0
+accelerate>=0.34.0
+safetensors>=0.4.0
+sentencepiece
+Pillow

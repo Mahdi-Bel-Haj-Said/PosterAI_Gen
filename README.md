@@ -84,8 +84,10 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 
 | Component | Status |
 | --- | --- |
-| Background generation — local pool | working (fine-tuned SD on Runpod deferred) |
-| 🟢 Background source resolver — user upload / system pool / Runpod stub | working — Runpod call is a documented stub |
+| 🟢 Fine-tuned background model — Qwen-Image-2512 LoRA (`lol_keyart`) | trained on RunPod + ai-toolkit — V1 (62 img) then V2 (244 img: 144 environment + 100 conditional character); see *Fine-tuned background generation model* |
+| 🟢 Background prompt pipeline — variation sampler → LLM enrichment → RAG → environment-first + Runeterra region grounding + energy-as-density | working; validated live on RunPod at 1536² |
+| 🟢 Pre-generated background bank (R2) — 24 combos × 5, delete-on-serve, ≤2 auto-refill (Redis-locked), empty-combo live fallback | working (queue-full fill keeps one warm worker; endpoint live) |
+| 🟢 Background source resolver — user upload / R2 bank / live RunPod fallback | working — RunPod Serverless endpoint live (returns `image_base64`) |
 | Prompt-generation stage (GPT-4o Vision) | working |
 | Poster-generation stage (gpt-image-2 editing) | working |
 | Sponsor bar overlay (Pillow) | working |
@@ -214,8 +216,9 @@ The key authenticates the platform; `org_id` must name an org registered under i
 input JSON  (+ org_id, tournament_id)
     |
     v
-[ background ]            -- select_background() returns bytes of a local image
-    |                        (shared system pool; fine-tuned SD deferred)
+[ background ]            -- select_background() returns background bytes: user
+    |                        upload, the R2 pre-gen bank (fine-tuned LoRA), or a
+    |                        live RunPod render / system-pool fallback
     v
 [ prompt generator ]      -- GPT-4o Vision reads the background + assembled
     |                        prompt and writes the image-generation prompt
@@ -353,6 +356,189 @@ The complete workflow:
 ```
 
 All of the above are scoped to an organization via `--org-id` (default `"1"`).
+
+---
+
+## Fine-tuned background generation model
+
+The background layer is produced by a **custom fine-tuned model** — a LoRA on
+**Qwen-Image-2512** — replacing the earlier "local pool / deferred SD"
+placeholder. This section is the engineering decision log for the model, the
+data strategy, the training configuration, the evaluation, the cost, and the
+prompt-generation pipeline that feeds it.
+
+### Model choice
+- **Base: Qwen-Image-2512** — the December-2025 improved checkpoint of Alibaba's
+  20B Qwen-Image (MMDiT). **Apache-2.0** (commercial-safe — decisive for a paid
+  product), native 2K, and a current open-model quality leader.
+- **Why not the 7B?** Qwen-Image-2.0 (a leaner 7B, released Feb 2026) is the
+  long-term target for cheaper serving, but the trainer (ai-toolkit) does not yet
+  support its architecture. We therefore fine-tune the **best-quality trainable
+  base (2512, 20B)** now; migrating to the 7B later is a *fresh retrain* (a LoRA
+  is base-specific), not a conversion.
+- **Fits a 48 GB GPU** via **float8 quantization + low-VRAM mode** — the 20B
+  trains as a LoRA on a single A40.
+- **Two per-game LoRAs** are planned (`lol_keyart`, `valo_keyart`); **League of
+  Legends is complete**, Valorant follows the same recipe.
+
+### Data strategy & the environment/character iteration
+The dataset was built and refined across two measured iterations:
+
+- **V1 (62 images).** Curated LoL key-art, captioned in a fixed natural-language
+  grammar with a style trigger. The model learned the style well but, trained on
+  character-heavy splash art, generated **plausible but non-canonical champions**
+  (invented faces). On a real poster a *wrong* champion looks worse than none —
+  and because the background is **composited** (hero/player, logos, and text are
+  added downstream), it should be *environment/atmosphere*, not a specific hero.
+- **V2 (244 images).** Pivoted to a **conditional** dataset — **144
+  environment-only** images + **100 with a single prominent character**. Captions
+  were rewritten so a character is described **only when it dominates the frame**,
+  **generically and never by name**, while incidental figures (distant soldiers,
+  poros, minions) are treated as environment and omitted. This clean caption split
+  teaches **conditional generation**: a prompt *without* a character yields a clean
+  environment; a prompt *with* one yields a generic figure in the scene.
+- **Caption grammar (both):**
+  `lol_keyart, <scene>, <c1> and <c2> palette, <m1> and <m2> mood, cinematic esports key art, highly detailed, <vibe>, <energy>`
+  — prose, color *words* (not hex), a two-adjective mood, and the raw vibe/energy
+  tokens the LoRA keys on.
+
+### Training configuration (ai-toolkit on RunPod)
+| Setting | V1 (`lol_keyart`) | V2 (`lol_keyart`) |
+|---|---|---|
+| Base model | Qwen-Image-2512 (20B) | Qwen-Image-2512 (20B) |
+| Images | 62 | 244 (144 env + 100 char) |
+| Network / rank / alpha | LoRA · 16 / 16 | LoRA · 32 / 32 |
+| Steps | 1500 | 3000 |
+| Save / sample cadence | every 250 / every 500 | every 250 / every 500 |
+| Learning rate / optimizer | 1e-4 / adamw8bit | 1e-4 / adamw8bit |
+| Batch size | 1 | 1 |
+| Resolutions (bucketed) | 768 + 1024 | 768 + 1024 |
+| Augmentation | horizontal flip | horizontal flip |
+| Quantization | float8 + low-VRAM | float8 + low-VRAM |
+| Text encoder | frozen | frozen |
+
+**Checkpoint selection** is by eye + the frozen eval samples — the checkpoint
+where the style is locked in but *before* compositions begin to memorize/overfit
+(V1's best was ≈ step 1250, the second-to-last checkpoint).
+
+### Evaluation
+- **Frozen eval set:** a fixed prompt list at a **fixed seed (42)**, reused across
+  every run so quality changes are measurable rather than subjective. V2 uses
+  **12 matched-pair prompts** — 6 environment-only and 6 identical scenes *with* a
+  character — to test the conditional behavior directly, plus 2 deliberately
+  extreme "limit-test" prompts to probe the model's ceiling.
+- **Result:** V2 samples show **clean environments for the character-free prompts
+  and a figure for the character prompts** — the conditional generation works as
+  designed, with style and palette landing strongly on the dominant vibes
+  (dark-fantasy, cinematic).
+
+### Infrastructure, cost & time
+- **Platform:** RunPod, **NVIDIA A40 (48 GB)** on-demand at **≈ $0.46/hr**, via the
+  official **Ostris ai-toolkit** template (web UI on port 8675).
+- **V1:** ~5 h wall-clock, **≈ $2.3**. **V2:** ~9 h (3000 steps + periodic
+  sampling), **≈ $4.5**.
+- **Discipline:** checkpoints (~281 MB each) are downloaded, then the pod is
+  **terminated and its volume deleted** immediately — idle time, not training, is
+  the cost risk. Total spend to date ≈ **$7** of a ≈ **$30** prepaid budget,
+  leaving room for the Valorant LoRA, a preference-alignment pass, and iteration.
+- **Serving:** inference runs on **RunPod Serverless** (per-second billing,
+  scale-to-zero), wired via `submit`/`poll` in `clients/runpod_client.py`. Output
+  is **1536×1536** — the practical ceiling on the serverless GPU: native 2048² (2K)
+  **OOMs the 20B model even on a 96 GB card** (quadratic attention), so 2K is
+  deferred to a Real-ESRGAN upscale pass. Backgrounds are **not** generated
+  per-request; they are pre-generated into the R2 bank below and served instantly.
+  See *Pre-generated background bank*.
+
+### The background prompt-generation pipeline
+The end user supplies two knobs — a **vibe** (aesthetic) and an **energy** — and
+the system turns them into a strong, unique, on-style caption in the exact
+training grammar. Two users with identical inputs still get different backgrounds
+because every layer is seeded fresh.
+
+1. **Deterministic variation sampler.** A seeded sampler composes a caption from
+   curated per-vibe banks — scene (setting + feature + atmosphere + effect),
+   palette, and mood — in the **exact training-caption grammar**. Free, instant,
+   always in-distribution; a fresh seed per request makes every prompt unique.
+2. **LLM enrichment / RAG generation (quality tiers).** A cheap LLM (gpt-4o-mini)
+   either *enriches* the sampled scene (**balanced** tier) or writes a brand-new
+   scene grounded in **real training captions** retrieved from a 224-caption store
+   (**premium** tier). Every rewrite is **grammar-validated**; anything that drifts
+   falls back to the sampler prompt, so the pipeline never ships off-distribution.
+
+Three prompt-quality decisions shape what the LLM writes:
+
+- **Environment-first (a refinement of the earlier "environment-only").**
+  Backgrounds lead with the environment, but **incidental Runeterra life is
+  welcome** — a distant drake, a poro, far-off soldiers — as long as it stays
+  *secondary*, never a dominant character and never a *named* champion (the
+  hero/player is composited downstream). The negative prompt was relaxed to match:
+  it suppresses text/logos and a *dominant* character portrait, not all figures.
+- **Runeterra region grounding.** ~50 % of prompts are grounded in a real region
+  of Runeterra — Shurima deserts, Zaun chem-glow, Ionia spirit-blossoms, Noxus
+  war-citadels, Bilgewater harbours, Targon's peak, the Void — using *renderable
+  environmental motifs* (never obscure lore proper nouns the LoRA can't paint);
+  the other ~50 % are free, non-region scenes. This keeps backgrounds
+  authentically LoL without every combo collapsing to one look. Crucially, the
+  requested **vibe/energy always dominate** the mood, sky, and lighting — a region
+  only supplies architecture and terrain, so a *cosmic* scene grounded in a bright
+  region becomes that region under a nebula sky, not plain daylight.
+- **Energy = detail density.** `energy` is a busyness dial, *not* literal energy:
+  `chill` → sparse, calm, few elements; `explosive` → maximally packed, intricate,
+  the opposite of minimal. Both the LLM directive and the sampler scale scene
+  density to it.
+
+**Best-of-N with a GPT-4o Vision judge** (render N seeds; score style-fit,
+overlay-friendly composition, and text-free-ness; keep the best) exists as a
+`generate_best_background` seam but is a **deferred quality phase**: with the
+pre-generated bank (below) the serving path draws from vetted, pre-made images
+rather than judging at request time. Prompt-side LLM work is ~$0.001, so the
+dominant cost dial is image generation, done offline at fill time.
+
+### Pre-generated background bank (R2)
+To keep model inference **off the request path**, backgrounds are **pre-generated
+offline in batches** and served **instantly** from Cloudflare R2 — the user never
+waits on the ~50 s (or ~6 min cold) generation. The `esports_poster_ai.bank`
+package owns this; it is **LoL-only** for now (the LoRA is LoL-trained, so the
+wizard shows AI-generated backgrounds as "Soon" for Valorant).
+
+- **Combo space.** The two knobs give **4 energies × 6 vibes = 24 combos**. The
+  bank keeps a small pool per combo (target **5**, so 120 images at full) under
+  `Bg_bank_lol/{energy}_{vibe}/{uuid}.png`. Counting objects under a prefix is the
+  only "database" — fine at current scale.
+- **Serve = delete-on-serve.** A request lists the combo's prefix, picks one at
+  **random**, **deletes it**, and returns it — so a background is never served
+  twice. An empty combo falls back to **live** generation (the rare "creating your
+  poster…" path).
+- **Refill.** When any combo drops to **≤ 2**, one **locked, single-flight** job
+  (Redis mutex) tops **every** combo back to 5 — batching all combos amortises the
+  cold start. Only the deficit is generated, never a full regen.
+- **Queue-full fill (the cold-start fix).** The 20B model reloads on every cold
+  start (~6 min of wasted GPU), and a naïve sequential fill lets the serverless
+  worker scale to zero *between* images. Instead the fill keeps RunPod's **queue
+  continuously full** (a rolling window of `bg_bank_fill_concurrency` in-flight
+  jobs, prompts pre-built up front): the worker **cold-starts once**, then runs
+  every image back-to-back warm, and scales to zero when done. This **requires the
+  endpoint's Max Workers = 1** so the queued jobs don't spin up extra cold-starting
+  workers.
+- **Generation settings.** 1536², **30 steps**, **guidance 5**, a varied diffusion
+  seed per image. A full 120-image seed is ~1.75 h / **~$6.50** at ~$0.001/s;
+  ongoing refills are cents.
+- **CLI.** `python -m esports_poster_ai.bank.seed --init-folders | --status |
+  --fill [--target N]`. `--target 1` does a one-per-combo validation pass before
+  committing to the full fill.
+
+### Known limitations & next steps
+- **Named champions.** A style LoRA cannot reliably reproduce a *specific*
+  champion's likeness; accurate champions are deferred (a stacked per-champion
+  LoRA, or compositing official art in the poster stage). The conditional model
+  produces *generic* figures on demand.
+- **Best-of-N quality culling** is built (`generate_best_background` + Vision
+  judge) but not yet wired into the fill — an occasional artifact slips through
+  (a faint baked-in logo/text, a too-busy composition). Enabling it at fill time
+  culls those at ~2× cost. Deferred until after the first bank.
+- **2K output** via a Real-ESRGAN upscale pass (native 2048² OOMs the 20B model).
+- **7B migration** for cheaper serving, once the trainer supports the architecture.
+- **Valorant LoRA** on the same recipe (then a `Bg_bank_valo` bank, ungating the UI).
 
 ---
 
@@ -632,8 +818,12 @@ OPENAI_MAX_RETRIES           default: 3
 OPENAI_INITIAL_BACKOFF_SECONDS  default: 1.0
 OPENAI_MAX_BACKOFF_SECONDS   default: 16.0
 LOG_LEVEL                    default: INFO
-RUNPOD_API_KEY               reserved for the deferred SD background stage
-RUNPOD_ENDPOINT_ID           reserved
+RUNPOD_API_KEY               RunPod Serverless key — fine-tuned LoRA background model (bank + live fallback)
+RUNPOD_ENDPOINT_ID           RunPod Serverless endpoint id
+BG_BANK_PREFIX               default: Bg_bank_lol  (top-level R2 folder for the background bank)
+BG_BANK_TARGET_PER_COMBO     default: 5
+BG_BANK_IMAGE_SIZE           default: 1536  (2K OOMs the 20B model)
+BG_BANK_FILL_CONCURRENCY     default: 3     (queue depth; needs endpoint Max Workers = 1)
 
 R2_ACCESS_KEY_ID             Cloudflare R2 API token — Access Key ID
 R2_SECRET_ACCESS_KEY         Cloudflare R2 API token — Secret Access Key
