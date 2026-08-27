@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Game = Literal["league_of_legends", "valorant"]
@@ -140,6 +140,59 @@ class PosterInput(_Loose):
 
     # tournament_announcement / tournament_banner-specific
     event: Optional[Any] = None
+
+    @model_validator(mode="after")
+    def _series_score_must_be_decided(self) -> "PosterInput":
+        """
+        A results poster states an outcome, so its score must be a FINISHED
+        series: exactly one team on the win target, the other below it.
+
+        Scores like 2-0 or 2-2 in a Bo5 are legal mid-series but cannot be a
+        final result, and the pipeline would render them as one — an authoritative
+        poster announcing a match that has not been decided. Validated here rather
+        than only in the wizard so an integrator's own frontend cannot post one.
+
+        Only enforced when there is something to check: results posters that
+        actually carry both scores and a recognised format.
+        """
+        if self.meta.poster_type != "game_results" or self.match is None:
+            return self
+
+        fmt = (self.match.format or "").strip().lower()
+        target = _SERIES_WIN_TARGET.get(fmt)
+        if target is None:
+            return self  # unknown/blank format — nothing to validate against
+
+        t1, t2 = self.match.team1, self.match.team2
+        if t1 is None or t2 is None or t1.score is None or t2.score is None:
+            return self
+
+        a, b = t1.score, t2.score
+        if a < 0 or b < 0:
+            raise ValueError("Series scores cannot be negative.")
+
+        hi, lo = max(a, b), min(a, b)
+        label = fmt.upper()
+
+        if hi != target or lo >= target:
+            raise ValueError(
+                f"{a}-{b} is not a finished {label}: the winner must reach "
+                f"exactly {target} and the loser stay below it."
+            )
+        if a + b > _SERIES_MAX_GAMES[fmt]:
+            raise ValueError(
+                f"A {label} runs at most {_SERIES_MAX_GAMES[fmt]} games, "
+                f"but {a}-{b} totals {a + b}."
+            )
+        return self
+
+
+
+
+# Games a team must win to take a best-of-N series, and the most games it can
+# run to. Bo1 -> 1 of 1, Bo3 -> 2 of 3, Bo5 -> 3 of 5.
+_SERIES_WIN_TARGET = {"bo1": 1, "bo3": 2, "bo5": 3}
+_SERIES_MAX_GAMES = {"bo1": 1, "bo3": 3, "bo5": 5}
 
 
 def to_block_dict(poster_input: PosterInput) -> dict:

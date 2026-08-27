@@ -49,6 +49,12 @@ class Job(BaseModel):
     tournament_id: str
     mode: JobMode
 
+    # Client-supplied `X-Idempotency-Key`. Unique per platform (enforced by a
+    # partial unique index in JobStore), so a retried or double-clicked submit
+    # returns the original job instead of generating — and billing — a second
+    # poster. None for CLI runs and for clients that don't send the header.
+    idempotency_key: Optional[str] = None
+
     # The poster input JSON, stored verbatim so the worker is self-contained.
     input_data: Dict[str, Any]
 

@@ -16,6 +16,7 @@ from esports_poster_ai.clients.openai_client import OpenAIClient, new_run_id
 from esports_poster_ai.config import Settings, get_settings
 from esports_poster_ai.domain.inputs import PosterInput
 from esports_poster_ai.processing import LOGO_MAX_DIM, PLAYER_MAX_DIM, resize_for_reference
+from esports_poster_ai.processing.remote_images import fetch_image_bytes, looks_like_url
 from esports_poster_ai.stages.background import select_background
 from esports_poster_ai.stages.poster_generator import PosterResult, generate_poster, save_poster
 from esports_poster_ai.stages.prompt_generator import generate_image_prompt
@@ -41,13 +42,22 @@ def _read_image(root: Path, maybe_path: Any) -> Optional[bytes]:
     """
     Resolve an image from the input JSON and read its bytes.
 
-    The pipeline is dual-mode: CLI runs reference local files like
-    `assets/logos/T1.png`; API runs reference R2 storage keys like
-    `defendr-poster-ai/orgs/1/assets/team-logos/{asset_id}.png`. Try local
-    first (cheap), then fall back to the configured storage backend.
+    The pipeline is tri-mode:
+      - CLI runs reference local files (`assets/logos/T1.png`)
+      - API runs reference R2 storage keys uploaded via `/v1/assets`
+      - express-endpoint callers pass plain URLs to their own CDN
+
+    Order matters: URLs are checked first (unambiguous), then local, then
+    storage. A URL is SSRF-guarded and size-capped before it is fetched.
     """
     if not isinstance(maybe_path, str) or not maybe_path.strip():
         return None
+
+    if looks_like_url(maybe_path):
+        return fetch_image_bytes(
+            maybe_path.strip(),
+            allow_insecure=get_settings().webhook_allow_insecure_urls,
+        )
 
     p = _resolve_path(root, maybe_path)
     if p is not None and p.is_file():

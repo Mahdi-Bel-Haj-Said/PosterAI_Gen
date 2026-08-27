@@ -16,6 +16,7 @@ from esports_poster_ai.api.routes.api_keys import router as api_keys_router
 from esports_poster_ai.api.routes.assets import router as assets_router
 from esports_poster_ai.api.routes.coins import router as coins_router
 from esports_poster_ai.api.routes.backgrounds import router as backgrounds_router
+from esports_poster_ai.api.routes.express import router as express_router
 from esports_poster_ai.api.routes.me import router as me_router
 from esports_poster_ai.api.routes.orgs import router as orgs_router
 from esports_poster_ai.api.routes.posters import router as posters_router
@@ -27,6 +28,7 @@ from esports_poster_ai.api.routes.usage import admin_router as admin_usage_route
 from esports_poster_ai.api.routes.usage import router as usage_router
 from esports_poster_ai.api.routes.webhooks import router as webhooks_router
 from esports_poster_ai.api.schemas import HealthResponse
+from esports_poster_ai.config import get_settings
 from esports_poster_ai.jobs.queue import get_redis
 from esports_poster_ai.jobs.store import JobStore
 
@@ -38,15 +40,42 @@ app = FastAPI(
     description="Generate esports posters via async jobs.",
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+# CORS is an env-driven allowlist rather than a hardcoded "*".
+#
+# `CORS_ALLOW_ORIGINS=*`  — any origin (dev default; what the reference SPA needs)
+# `CORS_ALLOW_ORIGINS=""` — no cross-origin browser access at all (production)
+# `CORS_ALLOW_ORIGINS=https://a.gg,https://b.gg` — just those
+#
+# Production for the Defendr integration is the empty case: the browser talks to
+# Defendr's backend, which proxies to this API server-side. Nothing needs a CORS
+# grant, so nothing gets one.
+_cors_setting = get_settings().cors_allow_origins.strip()
+_cors_origins = (
+    ["*"] if _cors_setting == "*"
+    else [origin.strip() for origin in _cors_setting.split(",") if origin.strip()]
 )
 
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+    if _cors_origins == ["*"]:
+        logger.warning(
+            "api.cors.wildcard — any origin may call this API from a browser. "
+            "Set CORS_ALLOW_ORIGINS before exposing it beyond localhost."
+        )
+else:
+    logger.info("api.cors.disabled — no cross-origin browser access permitted")
+
+# Express must be registered before the classic posters router: that router
+# declares GET/POST on "/{job_id}", which would otherwise match "express"
+# as a job id.
+app.include_router(express_router)
 app.include_router(posters_router)
 app.include_router(assets_router)
 app.include_router(style_dnas_router)

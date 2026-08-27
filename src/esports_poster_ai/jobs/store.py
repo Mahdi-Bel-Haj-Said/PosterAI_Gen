@@ -39,6 +39,39 @@ def _from_doc(doc: Dict[str, Any]) -> Job:
     return Job.model_validate(data)
 
 
+# Index creation is idempotent but still a round trip, and JobStore is built per
+# request via FastAPI's Depends — so do it once per process, not once per call.
+_indexes_ready = False
+
+
+def _ensure_indexes(collection: Any) -> None:
+    """
+    Create the idempotency index if it isn't there.
+
+    Partial + unique on (platform_id, idempotency_key), restricted to documents
+    where the key is actually a string. Without the partial filter every job that
+    predates this field — and every CLI job — would collide on `null`.
+
+    A failure here is logged, not raised: an index is an optimisation and a
+    safety net, and the API should still start if the user lacks index rights.
+    The duplicate-key path in `create()` is what actually enforces correctness.
+    """
+    global _indexes_ready
+    if _indexes_ready:
+        return
+
+    try:
+        collection.create_index(
+            [("platform_id", 1), ("idempotency_key", 1)],
+            unique=True,
+            partialFilterExpression={"idempotency_key": {"$type": "string"}},
+            name="uniq_platform_idempotency_key",
+        )
+        _indexes_ready = True
+    except Exception as e:  # noqa: BLE001 — never block startup on an index
+        logger.warning("job.index.failed", extra={"error": str(e)})
+
+
 class JobStore:
     """Repository over the `jobs` collection in MongoDB."""
 
@@ -64,6 +97,7 @@ class JobStore:
 
         client: Any = MongoClient(s.mongodb_url, tz_aware=True)
         self._col = client[s.mongodb_db]["jobs"]
+        _ensure_indexes(self._col)
 
     # ---------------------------------------------------------------- create
     def create(
@@ -74,6 +108,7 @@ class JobStore:
         tournament_id: str,
         mode: JobMode,
         platform_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Job:
         """Insert a new `queued` job and return it."""
         job = Job(
@@ -82,10 +117,25 @@ class JobStore:
             tournament_id=tournament_id,
             mode=mode,
             input_data=input_data,
+            idempotency_key=idempotency_key,
         )
         self._col.insert_one(_to_doc(job))
         logger.info("job.created", extra={"job_id": job.job_id, "mode": mode})
         return job
+
+    def find_by_idempotency_key(
+        self, idempotency_key: str, *, platform_id: Optional[str] = None
+    ) -> Optional[Job]:
+        """
+        The job a previous request with this key created, if any.
+
+        Scoped by `platform_id` so two platforms can pick the same key without
+        seeing each other's jobs — the same reasoning as the org-id namespacing.
+        """
+        doc = self._col.find_one(
+            {"idempotency_key": idempotency_key, "platform_id": platform_id}
+        )
+        return _from_doc(doc) if doc else None
 
     def ping(self) -> None:
         """Raise if the database is unreachable (used by the API health check)."""

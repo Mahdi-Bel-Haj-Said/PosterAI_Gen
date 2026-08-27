@@ -218,6 +218,17 @@ class Settings(BaseSettings):
             "Flip to True before exposing the API beyond localhost."
         ),
     )
+    cors_allow_origins: str = Field(
+        default="*",
+        description=(
+            "Comma-separated list of origins allowed to call this API from a "
+            "browser, or '*' for any. '*' is a DEV-ONLY default — it exists so "
+            "the reference SPA works from any port. In the Defendr integration "
+            "the browser never calls this API directly (Defendr's backend "
+            "proxies everything), so production should set this to an empty "
+            "string, which blocks all cross-origin browser access."
+        ),
+    )
     cost_per_poster_usd: float = Field(
         default=0.054,
         description="Estimated end-to-end cost of one completed poster (billing trail).",

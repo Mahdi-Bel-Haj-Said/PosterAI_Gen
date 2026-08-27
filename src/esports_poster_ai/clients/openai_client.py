@@ -16,7 +16,8 @@ import json
 import logging
 import re
 import uuid
-from typing import List, Optional, Tuple, Type, TypeVar
+from datetime import datetime, timezone
+from typing import Any, List, Optional, Tuple, Type, TypeVar
 
 from openai import (
     APIConnectionError,
@@ -110,6 +111,74 @@ def _looks_like_refusal(text: str) -> bool:
 
 # Errors we consider transient and worth retrying.
 RETRYABLE_ERRORS = (APIConnectionError, RateLimitError, InternalServerError, APIError)
+
+
+def _parse_retry_after(exc: BaseException) -> Optional[float]:
+    """
+    Seconds to wait per the response's `Retry-After` header, if it has one.
+
+    OpenAI sends this on 429s and it reflects when capacity actually frees up —
+    guessing with exponential backoff instead means either hammering a rate-limited
+    endpoint (and burning the retry budget in seconds) or sleeping far longer than
+    needed. Returns None when there's no usable header.
+
+    Handles both header forms: delta-seconds, and an HTTP-date (RFC 7231).
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if not headers:
+        return None
+
+    raw = headers.get("retry-after") or headers.get("Retry-After")
+    if not raw:
+        return None
+
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        pass
+
+    # HTTP-date form.
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(str(raw))
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    except Exception:  # noqa: BLE001 — a malformed header must never break retrying
+        return None
+
+
+def _wait_honoring_retry_after(fallback: Any, max_seconds: float) -> Any:
+    """
+    Tenacity wait strategy: obey `Retry-After` when the server sent one, else
+    fall back to exponential backoff.
+
+    The server's value is clamped to `max_seconds`. An upstream telling us to
+    wait ten minutes should not silently park a worker for ten minutes — better
+    to retry early and fail fast than to hold the queue.
+    """
+
+    def _wait(retry_state: Any) -> float:
+        outcome = getattr(retry_state, "outcome", None)
+        exc = outcome.exception() if outcome is not None else None
+
+        if exc is not None:
+            retry_after = _parse_retry_after(exc)
+            if retry_after is not None:
+                capped = min(retry_after, max_seconds)
+                logger.warning(
+                    "openai.retry_after",
+                    extra={"retry_after": retry_after, "sleeping": capped},
+                )
+                return capped
+
+        return fallback(retry_state)
+
+    return _wait
 
 
 def new_run_id() -> str:
@@ -357,13 +426,14 @@ class OpenAIClient:
     # ---------------------------------------------------------------- internals
     def _retry_policy(self):
         s = self.settings
+        exponential = wait_exponential(
+            multiplier=s.openai_initial_backoff_seconds,
+            max=s.openai_max_backoff_seconds,
+        )
         return retry(
             reraise=True,
             stop=stop_after_attempt(s.openai_max_retries),
-            wait=wait_exponential(
-                multiplier=s.openai_initial_backoff_seconds,
-                max=s.openai_max_backoff_seconds,
-            ),
+            wait=_wait_honoring_retry_after(exponential, s.openai_max_backoff_seconds),
             retry=retry_if_exception_type(RETRYABLE_ERRORS),
             before_sleep=before_sleep_log(logger, logging.WARNING),
         )

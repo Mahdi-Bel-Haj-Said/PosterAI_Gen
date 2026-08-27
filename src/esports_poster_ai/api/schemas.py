@@ -175,6 +175,11 @@ class StyleDNAResponse(BaseModel):
     particle_effects: str
     energy: str
     sd_style_keywords: str
+    # Hero-title typeface + finish/effect, and creative-copy style. Defaults to
+    # "" for DNAs saved before typography capture existed, so it is safe to read
+    # unconditionally. Consistency mode already passes this to the prompt; it was
+    # simply never exposed, so clients could not show what they were reusing.
+    typography: str = ""
     source_poster_path: Optional[str] = None
     source_poster_url: Optional[str] = Field(
         default=None,
@@ -197,6 +202,7 @@ class StyleDNAResponse(BaseModel):
             particle_effects=dna.particle_effects,
             energy=dna.energy,
             sd_style_keywords=dna.sd_style_keywords,
+            typography=dna.typography,
             source_poster_path=dna.source_poster_path,
             source_poster_url=source_poster_url,
             created_at=dna.created_at,

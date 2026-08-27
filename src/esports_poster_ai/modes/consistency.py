@@ -63,7 +63,9 @@ def run_consistency(
             extra={
                 "org_id": str(org_id),
                 "tournament_id": str(tournament_id),
-                "message": (
+                # NOT "message": logging reserves that name on LogRecord and
+                # raises KeyError when `extra` tries to shadow it.
+                "hint": (
                     "No Style DNA found for this tournament. Running as fresh. "
                     "After approving this poster, extract a DNA with "
                     "--extract-dna --source-poster <path> --tournament-id "
@@ -77,7 +79,7 @@ def run_consistency(
             extra={
                 "tournament_id": str(tournament_id),
                 "key": located.key,
-                "message": (
+                "hint": (
                     "Using a DRAFT Style DNA. Promote it with --approve-dna "
                     "once the style is reviewed."
                 ),

@@ -164,6 +164,108 @@ function isValidValorantMapScore(a, b) {
   return false;
 }
 
+// Required fields per poster type, as user-facing strings. Empty = valid.
+//
+// The form already marks these with a red asterisk (`<FormField req>`), but
+// nothing enforced them: you could leave the tournament and both team names
+// blank and still generate, producing a poster captioned "Team A vs Team B".
+// This makes the asterisk mean what it says.
+const REQUIRED_FIELDS = {
+  gameday: [
+    ["tournament_name", "Tournament name"],
+    ["match_format", "Format"],
+  ],
+  game_results: [
+    ["tournament_name", "Tournament name"],
+    ["match_format", "Format"],
+  ],
+  tournament_announcement: [
+    ["ann_start_date", "Start date"],
+    ["ann_location", "Location"],
+    ["ann_prize_pool", "Prize pool"],
+    ["ann_tagline", "Tagline"],
+  ],
+  tournament_banner: [
+    ["banner_date_range", "Date range"],
+    ["ann_location", "Location"],
+    ["ann_prize_pool", "Prize pool"],
+    ["ann_tagline", "Tagline"],
+  ],
+};
+
+function isBlank(v) { return v == null || String(v).trim() === ""; }
+
+function requiredFieldIssues(form) {
+  const type = form.poster_type;
+  const issues = [];
+
+  for (const [key, label] of (REQUIRED_FIELDS[type] || [])) {
+    if (isBlank(form[key])) issues.push(`${label} is required.`);
+  }
+
+  // Both sides of a matchup need a name — the poster is built around them.
+  if (type === "gameday" || type === "game_results") {
+    if (isBlank(form.team_a && form.team_a.name)) issues.push("Team 1 name is required.");
+    if (isBlank(form.team_b && form.team_b.name)) issues.push("Team 2 name is required.");
+  }
+
+  if (type === "roster_reveal" && isBlank(form.roster_team && form.roster_team.name)) {
+    issues.push("Team name is required.");
+  }
+
+  return issues;
+}
+
+function requiredFieldsValid(form) { return requiredFieldIssues(form).length === 0; }
+
+// Every problem with the SERIES score, as user-facing strings. Empty = valid.
+//
+// `clampScore` only stops a score being *impossible* (no team above the win
+// target, no series longer than N games). That still lets through scores that
+// are merely undecided — 2-0 or 2-2 in a BO5 — which are fine mid-series but
+// cannot be the FINAL score on a results poster. A results poster states an
+// outcome, so exactly one team must have reached the win target.
+function seriesScoreIssues(form) {
+  if (form.poster_type !== "game_results") return [];
+
+  const fmt = (form.match_format || "bo5").toLowerCase();
+  const target = seriesWinTarget(fmt);
+  const max = seriesMaxGames(fmt);
+  const label = fmt.toUpperCase();
+
+  const a = parseInt(form.score_a, 10);
+  const b = parseInt(form.score_b, 10);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a < 0 || b < 0) {
+    return ["Enter both team scores."];
+  }
+
+  const issues = [];
+  const hi = Math.max(a, b);
+  const lo = Math.min(a, b);
+
+  if (a === b) {
+    issues.push(`A ${label} can't end ${a}-${b} — a series always has a winner.`);
+  } else if (hi < target) {
+    issues.push(
+      `${a}-${b} isn't a finished ${label} — the winner needs ${target} ` +
+      `map${target === 1 ? "" : "s"}, not ${hi}.`
+    );
+  } else if (hi > target) {
+    // clampScore normally prevents this; kept so a pasted or restored draft
+    // can't slip an impossible score past the wizard.
+    issues.push(`A ${label} is first to ${target}, so ${hi} map wins is impossible.`);
+  } else if (lo >= target) {
+    issues.push(`Both teams can't reach ${target} in a ${label}.`);
+  }
+
+  if (a + b > max) {
+    issues.push(`A ${label} runs at most ${max} map${max === 1 ? "" : "s"}, but ${a}-${b} is ${a + b}.`);
+  }
+  return issues;
+}
+
+function seriesScoreValid(form) { return seriesScoreIssues(form).length === 0; }
+
 // Games actually played = sum of the series score. A 3-2 BO5 played 5 maps; a
 // 3-0 played 3. The number of Valorant maps must equal this.
 function gamesPlayed(form) {
@@ -321,15 +423,37 @@ function eur(n) {
 }
 
 // Users are billed in Red Coins, never dollars. `rc()` converts an internal
-// USD cost into the displayed token amount (tokensForUsd + fmtCoins are global,
-// defined in api.jsx). A signed token delta is used for the itemised lines.
-function rc(usd) {
-  return fmtCoins(tokensForUsd(usd)) + " " + coinSym();
+// USD cost into the displayed coin amount (tokensForUsd + fmtCoins are global,
+// defined in api.jsx). A signed delta is used for the itemised lines.
+//
+// `scale` (coins per USD) is optional. It exists for hosts that bill a flat
+// per-quality price instead of metered tokens: passing a scale derived from the
+// real charge keeps the itemised lines summing to the amount actually billed,
+// rather than showing a breakdown that disagrees with the invoice.
+function rc(usd, scale) {
+  const coins = scale != null ? Math.round(usd * scale) : tokensForUsd(usd);
+  return fmtCoins(coins) + " " + coinSym();
 }
-function rcDelta(usd) {
+function rcDelta(usd, scale) {
   if (usd === 0) return "free";
-  const tokens = tokensForUsd(Math.abs(usd));
-  return (usd < 0 ? "−" : "+") + fmtCoins(tokens) + " " + coinSym();
+  const coins = scale != null
+    ? Math.round(Math.abs(usd) * scale)
+    : tokensForUsd(Math.abs(usd));
+  return (usd < 0 ? "−" : "+") + fmtCoins(coins) + " " + coinSym();
+}
+
+// What one poster costs in coins.
+//
+// Defaults to the metered token model. A host may override it — Defendr bills a
+// flat price per render quality — in which case both the headline figure and the
+// insufficient-balance gate use the host's number, so the wizard can never quote
+// one price and charge another.
+function coinTotalFor(form, usdTotal) {
+  if (typeof window.posterCoinTotal === "function") {
+    const coins = window.posterCoinTotal(form, usdTotal);
+    if (Number.isFinite(coins) && coins >= 0) return coins;
+  }
+  return tokensForUsd(usdTotal);
 }
 
 // Derive a clean team token from an asset. Prefer the explicit `team` tag when
@@ -358,6 +482,18 @@ function buildTeamLogoLibrary(assets) {
 }
 
 // Identity for a sponsor logo, used for dedup + quick-pick selection state.
+// Where the pipeline should read an asset from.
+//
+// An asset is either uploaded to the brand library (`storage_key`) or referenced
+// in place by public URL (`url`) — the latter is how host-platform assets (team
+// logos, tournament covers already sitting in the platform's own storage) get
+// used without a re-upload. The generator resolves both, so the only rule here
+// is: prefer the explicit URL, fall back to the stored key.
+function assetPath(a) {
+  if (!a) return null;
+  return a.url || a.storage_key || null;
+}
+
 // Same sponsor name (case-insensitive, extension stripped) = same sponsor, even
 // if re-uploaded under a new storage key. Falls back to the storage key / id.
 function sponsorKeyOf(a) {
@@ -597,7 +733,7 @@ function buildInputJSON(form) {
 
   const sponsors = {
     enabled: !!form.sponsor_bar && form.sponsor_assets.length > 0,
-    logos: form.sponsor_assets.map((a) => ({ path: a.storage_key })),
+    logos: form.sponsor_assets.map((a) => ({ path: assetPath(a) })),
   };
 
   // Background source — the pipeline resolves it in stages/background.py.
@@ -606,7 +742,7 @@ function buildInputJSON(form) {
   //   generated:   emit source only; pipeline will call Runpod (deferred).
   let background = null;
   if (form.background_source === "custom" && form.custom_background_asset) {
-    background = { source: "custom", image_path: form.custom_background_asset.storage_key };
+    background = { source: "custom", image_path: assetPath(form.custom_background_asset) };
   } else if (form.background_source === "generated") {
     background = { source: "generated" };
   }
@@ -617,7 +753,7 @@ function buildInputJSON(form) {
     const o = {
       name: t.name || "",
       short_name: t.short || "",
-      logo_path: t.logo_asset ? t.logo_asset.storage_key : null,
+      logo_path: assetPath(t.logo_asset),
     };
     if (withScore) o.score = Number.isFinite(+score) ? +score : null;
     return o;
@@ -628,7 +764,7 @@ function buildInputJSON(form) {
       _meta,
       tournament: {
         name: form.tournament_name,
-        logo_path: form.tournament_logo_asset?.storage_key || null,
+        logo_path: assetPath(form.tournament_logo_asset),
         phase: form.tournament_phase || null,
       },
       match: {
@@ -645,7 +781,7 @@ function buildInputJSON(form) {
       },
       player_feature: {
         enabled: !!form.featured_player,
-        image_path: form.featured_player_asset?.storage_key || null,
+        image_path: assetPath(form.featured_player_asset),
       },
       sponsors,
       design,
@@ -658,7 +794,7 @@ function buildInputJSON(form) {
       _meta,
       tournament: {
         name: form.tournament_name,
-        logo_path: form.tournament_logo_asset?.storage_key || null,
+        logo_path: assetPath(form.tournament_logo_asset),
         phase: form.tournament_phase || null,
       },
       match: {
@@ -669,7 +805,7 @@ function buildInputJSON(form) {
       },
       player_feature: {
         enabled: !!form.featured_player,
-        image_path: form.featured_player_asset?.storage_key || null,
+        image_path: assetPath(form.featured_player_asset),
       },
       mvp: {
         enabled: !!form.mvp_on,
@@ -699,7 +835,7 @@ function buildInputJSON(form) {
       _meta,
       team: {
         name: form.roster_team.name || "",
-        logo_path: form.roster_team.logo_asset?.storage_key || "",
+        logo_path: assetPath(form.roster_team.logo_asset) || "",
       },
       roster: {
         season: form.roster_season || null,
@@ -707,8 +843,8 @@ function buildInputJSON(form) {
         players: form.roster_players.map((p, i) => ({
           ign: p.ign || "",
           role: coerceRole(p.role, game, i),
-          image_path: p.image_asset?.storage_key || null,
-          nationality_flag_path: p.nationality_flag_asset?.storage_key || null,
+          image_path: assetPath(p.image_asset),
+          nationality_flag_path: assetPath(p.nationality_flag_asset),
           is_new_signing: !!p.is_new_signing,
         })),
       },
@@ -723,7 +859,7 @@ function buildInputJSON(form) {
       _meta,
       tournament: {
         name: form.tournament_name,
-        logo_path: form.tournament_logo_asset?.storage_key || null,
+        logo_path: assetPath(form.tournament_logo_asset),
         start_date: form.ann_start_date || "",
         location: form.ann_location || null,
         prize_pool: form.ann_prize_pool || null,
@@ -743,7 +879,7 @@ function buildInputJSON(form) {
       _meta,
       tournament: {
         name: form.tournament_name,
-        logo_path: form.tournament_logo_asset?.storage_key || null,
+        logo_path: assetPath(form.tournament_logo_asset),
         date_range: form.banner_date_range || null,
         location: form.ann_location || null,
         prize_pool: form.ann_prize_pool || null,
@@ -1090,12 +1226,14 @@ function Step2({ form, set }) {
     <>
       {ptype !== "roster_reveal" && (
         <>
-          <SectionLabel n="02.A" label="Tournament" />
+          <SectionLabel n="02.A" label="Tournament"
+            hint="Pick one of your tournaments from the list, or type any name." />
           <div style={{ display: "grid", gridTemplateColumns: showPhase ? "1fr 1fr 240px" : "1fr 240px", gap: 14, marginBottom: 32 }}>
             <FormField label="Tournament name" req>
               {/* Free text, with a dropdown of the org's previously-used tournaments. */}
               <input className="input" list="epai-tournament-names" value={form.tournament_name}
-                     onChange={(e) => set({ tournament_name: e.target.value })} placeholder="MENA Pro League" />
+                     onChange={(e) => set({ tournament_name: e.target.value })}
+                     placeholder="Pick or type a tournament name" />
               <datalist id="epai-tournament-names">
                 {(form.tournament_name_suggestions || []).map((n) => <option key={n} value={n} />)}
               </datalist>
@@ -1167,18 +1305,23 @@ function Step2({ form, set }) {
             </>
           )}
 
-          {ptype === "game_results" && (
+          {ptype === "game_results" && (() => {
+            const seriesBad = !seriesScoreValid(form);
+            const scoreStyle = seriesBad
+              ? { borderColor: "var(--crim)", outline: "2px solid var(--crim-soft)", outlineOffset: -1 }
+              : undefined;
+            return (
             <>
               <SectionLabel n="02.C" label="Score"
                 hint={`${form.match_format} — first to ${seriesWinTarget(form.match_format)} wins; the two scores can total at most ${seriesMaxGames(form.match_format)}.`} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 14, marginBottom: 24, alignItems: "end" }}>
                 <FormField label="Team 1 score" req>
-                  <input className="input" type="number" value={form.score_a}
+                  <input className="input" type="number" value={form.score_a} style={scoreStyle}
                          onChange={(e) => set(withTrimmedMaps(form, { score_a: clampScore(e.target.value, form.score_b, form.match_format) }))}
                          min="0" max={seriesWinTarget(form.match_format)} />
                 </FormField>
                 <FormField label="Team 2 score" req>
-                  <input className="input" type="number" value={form.score_b}
+                  <input className="input" type="number" value={form.score_b} style={scoreStyle}
                          onChange={(e) => set(withTrimmedMaps(form, { score_b: clampScore(e.target.value, form.score_a, form.match_format) }))}
                          min="0" max={seriesWinTarget(form.match_format)} />
                 </FormField>
@@ -1265,7 +1408,8 @@ function Step2({ form, set }) {
                 </div>
               )}
             </>
-          )}
+          );
+          })()}
         </>
       )}
 
@@ -1899,7 +2043,9 @@ function Step4({ form, set }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 12 }}>
         {QUALITY.filter((qq) => allowedQ.includes(qq.id)).map((qq) => {
           const on = (form.quality || "medium") === qq.id;
-          const tierTotal = estimateCost({ ...form, quality: qq.id }).total;
+          const tierForm = { ...form, quality: qq.id };
+          const tierTotal = estimateCost(tierForm).total;
+          const tierScale = tierTotal > 0 ? coinTotalFor(tierForm, tierTotal) / tierTotal : null;
           return (
             <button key={qq.id} onClick={() => set({ quality: qq.id })}
               className="card"
@@ -1918,7 +2064,7 @@ function Step4({ form, set }) {
                 }}>×{qq.mult}</span>
               </div>
               <div style={{ fontSize: 12, color: "var(--fg-2)", minHeight: 32 }}>{qq.blurb}</div>
-              <div className="mono" style={{ fontSize: 12.5, color: "var(--fg)", marginTop: 8 }}>≈ {rc(tierTotal)}</div>
+              <div className="mono" style={{ fontSize: 12.5, color: "var(--fg)", marginTop: 8 }}>≈ {rc(tierTotal, tierScale)}</div>
               {qq.recommended && (
                 <div className="mono" style={{ fontSize: 9.5, color: "var(--fg-4)", marginTop: 4, letterSpacing: "0.1em" }}>RECOMMENDED</div>
               )}
@@ -2139,7 +2285,9 @@ function Step5({ form, jump, onGenerate, generating, error }) {
   const fmt = FORMATS.find((f) => f.id === form.format_id);
   const ptype = POSTER_TYPES.find((p) => p.id === form.poster_type);
   const cost = estimateCost(form);
-  const costTokens = tokensForUsd(cost.total);
+  const costTokens = coinTotalFor(form, cost.total);
+  // Coins per USD, so every itemised line below adds up to `costTokens`.
+  const costScale = cost.total > 0 ? costTokens / cost.total : null;
 
   // Red Coins balance, so we can price in tokens and block if short.
   const [balance, setBalance] = React.useState(null);
@@ -2237,7 +2385,7 @@ function Step5({ form, jump, onGenerate, generating, error }) {
             <span style={{ width: 18, height: 18, borderRadius: "50%", background: "var(--crim)", display: "inline-block", flexShrink: 0 }} title="Red Coins" />
             <span style={{ fontFamily: "var(--f-display)", fontSize: 16 }}>Estimated cost</span>
           </div>
-          <span style={{ fontFamily: "var(--f-mono)", fontSize: 18, color: "var(--fg)" }}>{rc(cost.total)}</span>
+          <span style={{ fontFamily: "var(--f-mono)", fontSize: 18, color: "var(--fg)" }}>{rc(cost.total, costScale)}</span>
         </div>
         <div className="col" style={{ gap: 6 }}>
           {cost.items.map((it, i) => (
@@ -2246,14 +2394,14 @@ function Step5({ form, jump, onGenerate, generating, error }) {
               <span className="mono" style={{
                 color: it.amount < 0 ? "var(--ok)" : it.amount === 0 ? "var(--fg-4)" : "var(--fg-2)",
               }}>
-                {rcDelta(it.amount)}
+                {rcDelta(it.amount, costScale)}
               </span>
             </div>
           ))}
           <div style={{ height: 1, background: "var(--line)", margin: "6px 0" }} />
           <div className="row" style={{ justifyContent: "space-between", fontSize: 13, fontWeight: 600 }}>
             <span>Total{cost.floored ? " (minimum)" : ""}</span>
-            <span className="mono">{rc(cost.total)}</span>
+            <span className="mono">{rc(cost.total, costScale)}</span>
           </div>
         </div>
         <div className="hint" style={{ marginTop: 10 }}>
@@ -2279,20 +2427,33 @@ function Step5({ form, jump, onGenerate, generating, error }) {
         {(() => {
           const rosterBad = !rosterPhotoValid(form);
           const mapsBad = !valorantMapsValid(form);
+          // A draft restored from an earlier session can carry a score that the
+          // current format no longer allows, so re-check it here rather than
+          // trusting that step 2 already gated it.
+          const seriesBad = !seriesScoreValid(form);
+          const requiredBad = !requiredFieldsValid(form);
           const c = rosterPhotoCount(form);
-          const note = rosterBad && form.poster_type === "roster_reveal"
-            ? `Invalid roster — pick 0, 1, or all 5 player photos (currently ${c}).`
-            : mapsBad
-              ? valorantMapIssues(form)[0]
-              : null;
-          const blocked = rosterBad || mapsBad || insufficient;
-          const headline = rosterBad
-            ? "Fix the roster photos to continue."
-            : mapsBad
-              ? "Fix the Valorant map results to continue."
-              : insufficient
-                ? "Not enough Red Coins for this poster."
-                : "All looks good. Let's make this poster.";
+          const note = requiredBad
+            ? requiredFieldIssues(form)[0]
+            : rosterBad && form.poster_type === "roster_reveal"
+              ? `Invalid roster — pick 0, 1, or all 5 player photos (currently ${c}).`
+              : seriesBad
+                ? seriesScoreIssues(form)[0]
+                : mapsBad
+                  ? valorantMapIssues(form)[0]
+                  : null;
+          const blocked = requiredBad || rosterBad || seriesBad || mapsBad || insufficient;
+          const headline = requiredBad
+            ? "Fill in the required fields to continue."
+            : rosterBad
+              ? "Fix the roster photos to continue."
+              : seriesBad
+                ? "Fix the series score to continue."
+                : mapsBad
+                  ? "Fix the Valorant map results to continue."
+                  : insufficient
+                    ? "Not enough Red Coins for this poster."
+                    : "All looks good. Let's make this poster.";
           return (
             <div style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 24 }}>
               <div>
@@ -2311,7 +2472,7 @@ function Step5({ form, jump, onGenerate, generating, error }) {
                 <div className="row" style={{ gap: 18, color: "var(--fg-3)", fontSize: 12.5 }}>
                   <span><span className="muted">Est. time</span> <span style={{ color: "var(--fg)", fontFamily: "var(--f-mono)" }}>20–60s</span></span>
                   <span style={{ width: 1, height: 14, background: "var(--line)" }} />
-                  <span><span className="muted">Est. cost</span> <span style={{ color: "var(--fg)", fontFamily: "var(--f-mono)" }}>{rc(cost.total)}</span></span>
+                  <span><span className="muted">Est. cost</span> <span style={{ color: "var(--fg)", fontFamily: "var(--f-mono)" }}>{rc(cost.total, costScale)}</span></span>
                   {balance != null && (
                     <>
                       <span style={{ width: 1, height: 14, background: "var(--line)" }} />
@@ -2403,6 +2564,61 @@ function Wizard({ navigate }) {
   // Persist the draft (form + current step) on every change.
   React.useEffect(() => { saveWizardDraft(form, step); }, [form, step]);
 
+  // ---- Autofill from a host-platform tournament -----------------------------
+  //
+  // A "Generate poster" button on a tournament or match page deep links here as
+  // `?tournamentId=…&matchId=…&type=…`. The host already knows who is playing,
+  // when, and where to watch; asking the user to retype it is the whole problem
+  // this integration exists to remove.
+  //
+  // Optional on both sides: `api.autofillFromTournament` is a host capability the
+  // standalone build does not have, and without the query params this is inert.
+  const [prefillNote, setPrefillNote] = React.useState(null);
+  const autofilledRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (autofilledRef.current) return;
+    if (typeof window.api.autofillFromTournament !== "function") return;
+
+    const params = new URLSearchParams(
+      (window.location.search || "") +
+      // Hash-routed builds carry the query after the route.
+      ((window.location.hash || "").split("?")[1] ? "&" + window.location.hash.split("?")[1] : "")
+    );
+    const tournamentId = params.get("tournamentId");
+    if (!tournamentId) return;
+
+    // Guard before the await: a slow response must not let a second run through.
+    autofilledRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await window.api.autofillFromTournament(tournamentId, {
+          matchId: params.get("matchId") || undefined,
+          type: params.get("type") || undefined,
+        });
+        if (cancelled || !res || !res.prefill) return;
+
+        // Merge, never replace: `defaultForm()` fields the host cannot know
+        // (vibe, energy, quality, output format) must survive untouched.
+        set(res.prefill);
+
+        const missing = res.missing || [];
+        setPrefillNote(
+          missing.length
+            ? `Filled in from your tournament. Still needed: ${missing.join(", ")}.`
+            : "Filled in from your tournament — check it over and pick a style."
+        );
+      } catch (e) {
+        // Never block manual creation because the prefill failed.
+        if (!cancelled) setPrefillNote(`Couldn't autofill from the tournament: ${e.message}`);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
+
   // Load the org's previously-uploaded team logos so quick-pick can reuse them.
   React.useEffect(() => {
     let cancelled = false;
@@ -2429,18 +2645,41 @@ function Wizard({ navigate }) {
       })
       .catch(() => { /* non-fatal — quick-pick just stays empty */ });
 
-    // Previously-used tournament names, for the name field's dropdown suggestions.
-    window.api.listPosters({ orgId: form.org_id, limit: 100 })
-      .then((res) => {
-        if (cancelled) return;
-        const seen = [];
+    // Suggestions for the tournament-name field, from two sources:
+    //
+    //   1. the org's real tournaments, when the host platform can list them
+    //      (`api.listTournaments`) — so the user picks an event they already
+    //      created instead of retyping its name and risking a typo, which would
+    //      silently start a separate tournament for Style DNA and history;
+    //   2. names used on this org's previous posters, as a fallback.
+    //
+    // The field stays free text either way: the list is a convenience, never a
+    // constraint, so a one-off event that lives nowhere else still works.
+    const collectSuggestions = async () => {
+      const names = [];
+      const push = (raw) => {
+        const n = (raw || "").trim();
+        if (n && n !== "_standalone" && !names.includes(n)) names.push(n);
+      };
+
+      // Optional capability: the standalone build has no tournaments to list.
+      if (typeof window.api.listTournaments === "function") {
+        try {
+          const res = await window.api.listTournaments();
+          for (const t of (res.list || res.tournaments || [])) push(t.name);
+        } catch (_) { /* non-fatal — fall through to past posters */ }
+      }
+
+      try {
+        const res = await window.api.listPosters({ orgId: form.org_id, limit: 100 });
         for (const p of (res.posters || res.jobs || [])) {
-          const n = (p.input_data?.tournament?.name || p.tournament_id || "").trim();
-          if (n && n !== "_standalone" && !seen.includes(n)) seen.push(n);
+          push(p.input_data?.tournament?.name || p.tournament_id);
         }
-        set({ tournament_name_suggestions: seen.slice(0, 30) });
-      })
-      .catch(() => { /* non-fatal — the name field just has no suggestions */ });
+      } catch (_) { /* non-fatal — the name field just has fewer suggestions */ }
+
+      if (!cancelled) set({ tournament_name_suggestions: names.slice(0, 30) });
+    };
+    collectSuggestions();
     return () => { cancelled = true; };
   }, [form.org_id]);
 
@@ -2509,15 +2748,40 @@ function Wizard({ navigate }) {
         {step === 5 && <Step5 form={form} jump={(n) => setStep(n)} onGenerate={generate} generating={submitting} error={submitError} />}
       </div>
 
+      {prefillNote && (
+        <div className="card" style={{
+          padding: "11px 14px", marginBottom: 18,
+          borderColor: "var(--cy-line)", background: "var(--cy-soft, var(--surface-2))",
+          display: "flex", alignItems: "flex-start", gap: 10,
+        }}>
+          <Icon name="sparkles" size={14} />
+          <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5 }}>{prefillNote}</div>
+          <button className="btn btn-ghost" style={{ padding: "2px 6px" }}
+                  onClick={() => setPrefillNote(null)} aria-label="Dismiss">
+            <Icon name="cross" size={12} />
+          </button>
+        </div>
+      )}
+
       {step < 5 && (() => {
+        // Missing fields first — a blank form shouldn't lead with a complaint
+        // about map scores the user hasn't reached yet.
+        const requiredBlocking = step === 2 && !requiredFieldsValid(form);
         const rosterBlocking = step === 2 && !rosterPhotoValid(form);
+        // Checked before the map list: if the series score itself is wrong, the
+        // "map wins don't match the score" complaint is just noise on top of it.
+        const seriesBlocking = step === 2 && !seriesScoreValid(form);
         const mapsBlocking = step === 2 && !valorantMapsValid(form);
-        const blocking = rosterBlocking || mapsBlocking;
-        const blockingHint = rosterBlocking
-          ? `Roster reveal needs 0 (text-only), 1 (hero), or all 5 player photos — not ${rosterPhotoCount(form)}.`
-          : mapsBlocking
-            ? valorantMapIssues(form)[0]
-            : null;
+        const blocking = requiredBlocking || rosterBlocking || seriesBlocking || mapsBlocking;
+        const blockingHint = requiredBlocking
+          ? requiredFieldIssues(form)[0]
+          : rosterBlocking
+            ? `Roster reveal needs 0 (text-only), 1 (hero), or all 5 player photos — not ${rosterPhotoCount(form)}.`
+            : seriesBlocking
+              ? seriesScoreIssues(form)[0]
+              : mapsBlocking
+                ? valorantMapIssues(form)[0]
+                : null;
         return (
           <div className="row" style={{
             marginTop: 36, paddingTop: 24, borderTop: "1px solid var(--line)",

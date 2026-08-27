@@ -84,6 +84,8 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 
 | Component | Status |
 | --- | --- |
+| 🟢 **Deployed** — API + MongoDB + Redis + RQ worker on the VPS | live; see *Deployment* |
+| 🟢 **Defendr integration** — first platform in production, via its own BFF | live; see *Defendr integration* |
 | 🟢 Fine-tuned background model — Qwen-Image-2512 LoRA (`lol_keyart`) | trained on RunPod + ai-toolkit — V1 (62 img) then V2 (244 img: 144 environment + 100 conditional character); see *Fine-tuned background generation model* |
 | 🟢 Background prompt pipeline — variation sampler → LLM enrichment → RAG → environment-first + Runeterra region grounding + energy-as-density | working; validated live on RunPod at 1536² |
 | 🟢 Pre-generated background bank (R2) — 24 combos × 5, delete-on-serve, ≤2 auto-refill (Redis-locked), empty-combo live fallback | working (queue-full fill keeps one warm worker; endpoint live) |
@@ -152,7 +154,7 @@ The user fills a JSON file with match or event data (team names, tournament, tim
 | 🟢 Faster Style DNA — one bulk `GET /v1/style-dnas` + parallel loads + short server cache | working |
 | 🟢 Sponsor-logo quick-pick + dedup; cleaner team-logo labels; responsive result frame + full-screen lightbox | working |
 | 🟢 Client integration guide (`GUIDE.md`) + one-click launcher (`start.bat` / `start-all.ps1`) | working |
-| Defendr integration | not started |
+| 🟢 Defendr integration — BFF, billing bridge, embedded studio UI | live in production |
 
 ---
 
@@ -845,7 +847,7 @@ API_KEY_REQUIRED             default: false. When true, every org-scoped endpoin
                              org_id is per-request and must be registered under it, and all data is
                              namespaced + isolated per platform. When false (dev), org_id may be
                              passed directly and a key is optional (but still validated when present).
-                             Set true before exposing beyond localhost.
+                             🟢 true in production; false only for local dev.
 COST_PER_POSTER_USD          default: 0.054  (used by GET /v1/usage)
 
 QUOTA_DAY_DEFAULT            default: 3   ) per-org rolling-window quota defaults. Each org can
@@ -882,6 +884,94 @@ POSTIZ_API_KEY               optional. Public-API key generated in the Postiz UI
 When the four required R2 variables are set, `get_storage()` returns `R2Storage`; otherwise it falls back to `LocalStorage` rooted at `scratch/storage/`. This means the pipeline runs with zero R2 configuration in dev and tests.
 
 Reading `os.environ` directly anywhere in the codebase is discouraged — import `get_settings()` from `config.py` instead.
+
+---
+
+## Deployment
+
+The service runs on a VPS: the FastAPI app, MongoDB, Redis, and the RQ worker,
+with R2 for object storage. Generation is asynchronous, so the API and the worker
+are separate processes sharing Redis as the queue — the API stays responsive
+while a poster takes its 20–60 seconds.
+
+```
+                      VPS
+  ┌──────────────────────────────────────────────┐
+  │  FastAPI (uvicorn)  ──enqueue──►  Redis      │
+  │        │                            │        │
+  │        │                       RQ worker     │
+  │        ▼                            │        │
+  │     MongoDB  ◄──────────────────────┘        │
+  └──────────────────────────────────────────────┘
+                     │
+                     ▼
+           Cloudflare R2 (objects)
+```
+
+**Processes.** The API and the worker must both run, and both need the same
+`.env`. On Windows the worker needs `--worker-class rq.SimpleWorker`, because
+RQ's default worker calls `os.fork()`:
+
+```bash
+python -m esports_poster_ai.api                       # API
+rq worker poster-ai epai-webhooks --url redis://…     # worker (add --worker-class rq.SimpleWorker on Windows)
+```
+
+The worker drains two queues: `poster-ai` for generation and `epai-webhooks` for
+outbound delivery. A worker that is not running is a silent failure mode —
+submissions still return `202` and simply never progress, so treat "worker alive"
+as a health check, not an assumption.
+
+**Configuration that matters in production**, beyond the API keys:
+
+| Variable | Why it matters |
+| --- | --- |
+| `API_KEY_REQUIRED` | **Set `true`.** Defaults to `false` so the localhost dev flow works unauthenticated. |
+| `API_PORT` | Defaults to `8000`. Pin it explicitly — a service that silently comes up on the wrong port looks like a network outage to every client. |
+| `WEBHOOKS_ENABLED` | Off by default; required for completion callbacks. |
+| `QUOTA_DAY_DEFAULT` / `_WEEK_` / `_MONTH_` | Per-org rolling caps (3 / 15 / 30). Raise per org via `/v1/orgs`, not globally. |
+
+**Code reload.** Both the API and the worker import the pipeline at start-up, so
+a deploy has to restart *both*. Restarting only the API leaves the worker running
+the previous revision, and generation is what the worker does.
+
+---
+
+## Defendr integration
+
+Defendr embeds the studio as a native feature while the service stays sellable
+standalone. The shape worth copying for the next integrator:
+
+**A backend-for-frontend, not direct calls.** Defendr's browser never touches this
+API. Its backend exposes `/PosterStudio/*` (21 routes) and holds the platform API
+key server-side — one key authenticates the whole platform, so leaking it would
+expose every org's posters. That BFF is also where **org scoping** happens: the
+API key authenticates a *platform*, and this service's by-id routes therefore
+check `platform_id` only. Confining one org from another is the integrator's job,
+by design — the platform is the tenant, its orgs are sub-tenants it manages.
+
+**Billing bridges at the integrator's layer.** Defendr charges its own RED wallet:
+authorize → price → mirror row → debit → submit → refund on failure. The debit is
+a conditional atomic update (`redCoins >= amount` matched and `$inc` applied in
+one operation), so a double-clicked generate cannot overspend a balance.
+
+**Two front doors.** `POST /v1/posters` runs the full managed path — org
+registration, quota windows, coin balance, plan features. `POST /v1/posters/express`
+runs none of it: one call in, a poster out, with metering and idempotency kept.
+Defendr uses the managed route; an integrator who only wants a function call uses
+express and gates access in their own code.
+
+**Assets by URL.** Logo and background fields accept a public `https` URL as well
+as an uploaded storage key, so a platform's existing CDN assets need no
+re-upload. Fetches are SSRF-guarded: private ranges rejected, every redirect hop
+re-validated, size-capped, content-type checked.
+
+**Contract drift is checked, not hoped for.** Two boundaries cross a type gap —
+the ported UI against the BFF adapter, and the BFF against this service's FastAPI
+routes. Both have a checker in the Defendr repo that parses one side and verifies
+the other. They exist because four wrong field names shipped silently: a payload
+key the service ignores does not error, it just produces `Field required` for the
+key you *should* have sent.
 
 ---
 
@@ -1028,7 +1118,7 @@ Two layers:
   The gate has two modes, controlled by `API_KEY_REQUIRED`:
 
   - **`false` (dev default)** — single-tenant localhost surface: `org_id` is passed directly, a key is optional, `platform_id` is null (flat storage layout), and there is no registration/isolation enforcement. The existing frontend keeps working untouched. Any key that *is* sent is still validated.
-  - **`true`** — a valid Bearer key is mandatory on every org-scoped endpoint (missing/invalid key → 401); the platform comes from the key, `org_id` must name an org registered under it (else 404), and all data is confined to that platform. **Flip this to `true` before exposing the API beyond localhost.**
+  - **`true`** — a valid Bearer key is mandatory on every org-scoped endpoint (missing/invalid key → 401); the platform comes from the key, `org_id` must name an org registered under it (else 404), and all data is confined to that platform. 🟢 **Set `true` in the deployed environment.** It defaults to `false` only so the localhost dev flow works unauthenticated.
 
   This is what makes a real key-authenticated integration work: a platform is issued a key (admin endpoint), registers its orgs (`POST /v1/orgs`), and from then on every call is scoped and isolated to that platform.
 
@@ -1180,7 +1270,7 @@ Remaining loose ends:
 - 🟢 **Webhook callbacks on job completion** — **done**. Per-platform signed webhooks (`poster.completed` / `poster.failed`) with HMAC-SHA256 signatures, an SSRF-guarded HTTPS callback registry (`PUT /v1/webhook`), a separate delivery queue with exponential-backoff retries + dead-letter, a delivery audit log + replay, and a synchronous `POST /v1/webhook/test`. Gated behind `WEBHOOKS_ENABLED` (default off; the emit hook is a wrapped no-op until turned on). See `webhooks/` + `api/routes/webhooks.py`.
 - **`Retry-After` honoring** on 429s (mentioned in *Known gaps*).
 
-### Phase 5 — Multi-tenancy — **partial**
+### Phase 5 — Multi-tenancy — **done**
 
 `api_keys` (hashed) and `usage_events` collections exist, `org_id` scopes every business row, `JobStore.usage_summary()` powers `GET /v1/usage`. Admin endpoints gate on `Settings.admin_token`.
 
@@ -1188,9 +1278,18 @@ Remaining loose ends:
 
 - **Rate limiting + per-org quotas** — ✅ the rolling-window quota enforcement is already shipped (see *Per-org rate limiting*). Sub-second token-bucket precision and max-parallel-jobs limits are still deferred until the second real tenant lands.
 
-### Phase 6 — Defendr integration — not started
+Isolation is **structural, not filtered** — every object key embeds its owner:
 
-Defendr becomes the first API consumer. Its backend calls `POST /v1/posters` when a match is scheduled, passes tournament/team data inline, and receives a webhook (once webhooks land) on completion. No shared database between the two services — they remain bounded contexts that communicate over HTTP. This preserves the standalone-SaaS path: any other esports org can sign up with a separate API key and use the same API without any Defendr-specific assumptions.
+```
+{prefix}/platforms/{platform_id}/orgs/{org_id}/assets/{asset_type}/{uuid}.png
+{prefix}/platforms/{platform_id}/orgs/{org_id}/tournaments/{tid}/posters/{poster}.png
+```
+
+Path segments are validated (`/`, `\`, `..` rejected) for `platform_id`, `org_id`, `tournament_id` and `asset_id`, so no id can escape its namespace. Verified live against a second tenant: listing another platform's org returned 0, and reading or deleting one of its assets by id returned 404 with the object left intact — 404 rather than 403 throughout, so a caller never learns that something exists.
+
+### Phase 6 — Defendr integration — 🟢 **done**
+
+Defendr is the first platform in production. The two services remain bounded contexts communicating over HTTP with **no shared database**, which is what preserves the standalone-SaaS path: any other org signs up with a separate API key and uses the same API with no Defendr-specific assumptions. See *Defendr integration* for the full surface.
 
 ### Phase 1 — Reliability hardening (still the next priority)
 
@@ -1209,11 +1308,13 @@ A draft/preview mode that runs the image stage at `quality="low"` first and only
 The critical path now runs through quality and tenancy, not plumbing:
 
 1. **Phase 1 PIL text-composite layer.** This is the gap that will bite first when a real tenant generates a wrong-score result poster.
-2. **Auth middleware that pins `org_id` from a bearer key.** Quick win; turns `org_id` from a per-request claim into a verified one. Required before the API is exposed beyond localhost.
+2. ~~**Auth middleware that pins `org_id` from a bearer key.**~~ 🟢 **done** — the key resolves a `platform_id`, `org_id` is validated against that platform's registry, and `API_KEY_REQUIRED=true` in the deployed environment.
 3. **Sponsor-bar storage support.** Closes the last asset-reading gap, mirrors what `_read_image` already does.
 4. ~~**Webhook callbacks on job completion.**~~ 🟢 **done** — signed, retried, per-platform webhooks behind `WEBHOOKS_ENABLED` (see *Phase 4* loose ends and `webhooks/`).
 5. **Background pool in R2.** Curated artwork uploaded to `system/backgrounds/`; `select_background()` reads from storage instead of the local folder.
-6. **Defer rate-limiting and quotas** until the second tenant lands.
+6. ~~**Defer rate-limiting and quotas.**~~ 🟢 rolling day/week/month windows shipped and enforced; the first tenant (Defendr) is live, so the next open question is per-platform ceilings on the express route, which deliberately skips per-org quota.
+
+7. **BYOK is modelled but not implemented.** `service_type: "byok"` sits on the platform record and `/v1/me` reports which credentials are set, but `get_storage()` never receives a platform and nothing reads those credentials — every client's objects land in the provider's bucket. Either wire per-platform storage and model credentials, or rename the field so nobody sells against it.
 
 ---
 

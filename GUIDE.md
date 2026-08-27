@@ -49,7 +49,82 @@ Health check (no auth): `GET /health` → `{"status":"ok","mongodb":"ok","redis"
 
 ---
 
-## 3. Quickstart — generate your first poster
+## 3. Quickstart — one call, one poster (recommended)
+
+`POST /v1/posters/express` is the simple integration surface. One call in, a
+poster out. **No org registration, no coin balance, no quota tier, no tenancy
+model to adopt** — you decide who may generate and what (if anything) it costs
+your users, in your own code:
+
+```js
+// your rules, your currency, your users
+if (user.wallet.balance >= YOUR_PRICE && mayGenerate(user, org)) {
+  const poster = await fetch('https://<host>/v1/posters/express?wait=90', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input }),
+  }).then(r => r.json())
+
+  await debit(user, YOUR_PRICE)      // only you know what a poster is worth
+  return poster.image_url
+}
+```
+
+```bash
+curl -X POST "https://<host>/v1/posters/express?wait=90"   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json"   -d '{"input": '"$(cat gameday.json)"'}'
+# -> 200 {"job_id":"...","status":"completed","image_url":"https://...",
+#         "cost":{"usd":0.054,"quality":"medium"}}
+```
+
+### Waiting, and what happens when your proxy will not
+
+A poster takes **20–90 seconds**. `wait` (0–100s, default 90) is how long we
+hold the connection:
+
+| Outcome | Response |
+| --- | --- |
+| Finished within `wait` | **200** with `image_url` |
+| Still generating | **202** with `job_id` + `poll_url` — poll `GET /v1/posters/{job_id}` |
+| `wait=0` | **202** immediately — you poll from the start |
+
+Either way the generation continues; a 202 never wastes the work. If your stack
+cuts long requests (Heroku at 30s, many nginx setups at 60s), set `wait` below
+that limit and take the polling path.
+
+### Logos: pass a URL, no upload step
+
+Logo fields accept a public `https://` URL as well as an uploaded storage key,
+so assets already on your CDN need no pre-upload:
+
+```json
+{ "match": { "team1": { "name": "Fnatic",
+                        "logo_path": "https://your-cdn.com/logos/fnatic.png" } } }
+```
+
+URLs are fetched server-side with an SSRF guard (no private/loopback/metadata
+addresses, redirects re-validated per hop), a 15 MB cap and a 10s timeout. A
+logo that cannot be fetched is skipped — you still get a poster.
+
+### Repeat-safe
+
+Send `X-Idempotency-Key` and a retried request returns the original poster
+instead of generating — and billing you for — a second one. Replays answer with
+`X-Idempotent-Replay: true`.
+
+### Grouping (optional)
+
+Pass `group_id` to make several posters share a visual identity (Style DNA):
+a tournament, a season, a team. It is only a namespace — never an access check,
+and it needs no registration. Omit it for a standalone poster.
+
+---
+
+## 3b. The managed flow — orgs, coins and quotas
+
+Use this only if you want the built-in tenancy and billing rather than your own.
+It adds an org registry, a Red Coins wallet per org, monthly grants and quota
+tiers — and `POST /v1/posters` will answer **402** when an org's balance is short.
+
 
 ```bash
 # 1) (optional) price it first

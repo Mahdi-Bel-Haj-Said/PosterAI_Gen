@@ -51,6 +51,7 @@ def enqueue_poster_job(
     tournament_id: str,
     mode: JobMode,
     platform_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
     settings: Optional[Settings] = None,
 ) -> Job:
     """
@@ -58,6 +59,7 @@ def enqueue_poster_job(
 
     Returns the created `Job` (its `job_id` is the handle the caller polls).
     `platform_id` (from the API key) scopes storage + isolation; None for CLI.
+    `idempotency_key` collapses a retried submit onto the original job.
     """
     s = settings or get_settings()
 
@@ -68,6 +70,7 @@ def enqueue_poster_job(
         tournament_id=tournament_id,
         mode=mode,
         platform_id=platform_id,
+        idempotency_key=idempotency_key,
     )
 
     # The Mongo job is written first; the Redis push is a separate step. If the

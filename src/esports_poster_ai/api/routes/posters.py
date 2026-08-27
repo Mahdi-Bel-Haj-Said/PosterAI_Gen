@@ -12,10 +12,16 @@ from typing import Any, Dict, Optional
 
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response as FastAPIResponse
 from pydantic import BaseModel, Field, ValidationError
+
+try:  # pymongo is a lazy/optional dependency — tests inject a mongomock collection
+    from pymongo.errors import DuplicateKeyError
+except ImportError:  # pragma: no cover
+    class DuplicateKeyError(Exception):  # type: ignore[no-redef]
+        """Stand-in so the duplicate-key handler stays valid without pymongo."""
 
 from esports_poster_ai.api.deps import AuthContext, get_auth_context, get_org_store
 from esports_poster_ai.api.schemas import (
@@ -92,6 +98,15 @@ def create_poster(
     store: JobStore = Depends(get_job_store),
     auth: AuthContext = Depends(get_auth_context),
     org_store: OrgStore = Depends(get_org_store),
+    idempotency_key: Optional[str] = Header(
+        default=None,
+        alias="X-Idempotency-Key",
+        description=(
+            "Optional. Repeating a request with the same key returns the "
+            "original job instead of generating (and charging for) a second "
+            "poster. Scoped per platform."
+        ),
+    ),
 ) -> JobResponse:
     """
     Enqueue a poster-generation job.
@@ -105,7 +120,27 @@ def create_poster(
     Per-org rate limit (rolling day / week / month) is checked before enqueue and
     the standard `X-RateLimit-*` headers are stamped on the response. A breach
     returns HTTP 429 with `Retry-After`.
+
+    Supplying `X-Idempotency-Key` makes the call safe to retry: a duplicate
+    returns the original job (202, `X-Idempotent-Replay: true`) without spending
+    quota or coins. A poster costs real money, so a network retry or a
+    double-clicked button must never produce two.
     """
+    # Cheap pre-check: catches the overwhelmingly common case (a retry arriving
+    # after the first request finished) before doing any validation or quota
+    # work. The genuine race is caught by the unique index at insert time.
+    if idempotency_key:
+        existing = store.find_by_idempotency_key(
+            idempotency_key, platform_id=auth.platform_id
+        )
+        if existing is not None:
+            response.headers["X-Idempotent-Replay"] = "true"
+            logger.info(
+                "api.poster.idempotent_replay",
+                extra={"job_id": existing.job_id, "idempotency_key": idempotency_key},
+            )
+            return JobResponse.from_job(existing)
+
     org_id = auth.require_org(req.org_id)
     limits = auth.resolve_org_limits(org_id, org_store)
 
@@ -130,13 +165,32 @@ def create_poster(
     # Red Coins gate (in addition to the rolling quota). Charged on success.
     _assert_coins_or_raise(org_store, auth, org_id, poster.meta.quality)
 
-    job = enqueue_poster_job(
-        input_data=req.input,
-        org_id=org_id,
-        tournament_id=req.tournament_id,
-        mode=poster.meta.mode,
-        platform_id=auth.platform_id,
-    )
+    try:
+        job = enqueue_poster_job(
+            input_data=req.input,
+            org_id=org_id,
+            tournament_id=req.tournament_id,
+            mode=poster.meta.mode,
+            platform_id=auth.platform_id,
+            idempotency_key=idempotency_key,
+        )
+    except DuplicateKeyError:
+        # Two identical submits raced past the pre-check. The unique index let
+        # exactly one through; this is the loser, so return the winner's job.
+        # Without this the caller would see a 500 and most likely retry — the
+        # very thing the key exists to prevent.
+        existing = store.find_by_idempotency_key(
+            idempotency_key, platform_id=auth.platform_id
+        ) if idempotency_key else None
+        if existing is None:
+            raise
+        response.headers["X-Idempotent-Replay"] = "true"
+        logger.info(
+            "api.poster.idempotent_race",
+            extra={"job_id": existing.job_id, "idempotency_key": idempotency_key},
+        )
+        return JobResponse.from_job(existing)
+
     apply_quota_headers(response, quotas)
     logger.info("api.poster.created", extra={"job_id": job.job_id})
     return JobResponse.from_job(job)

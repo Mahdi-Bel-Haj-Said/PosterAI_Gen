@@ -241,7 +241,9 @@ function Dashboard({ navigate }) {
   const successRate = totalCount > 0
     ? ((completedCount / Math.max(1, completedCount + failedCount)) * 100).toFixed(1) + "%"
     : "—";
-  const coinsLabel = coins ? `${coins.tier} tier` : "balance";
+  // Deployments that bill straight from a wallet have no plan tier; show the
+  // plain "balance" caption rather than the string "undefined tier".
+  const coinsLabel = coins && coins.tier ? `${coins.tier} tier` : "balance";
 
   const stats = [
     { label: "Posters total",       value: String(totalCount),       delta: `${completedCount} done`, positive: true },
@@ -390,37 +392,179 @@ function Dashboard({ navigate }) {
   );
 }
 
-function StyleDnaCard({ dna, navigate }) {
-  const approved = dna.status === "approved";
+// One labelled row in the Style DNA detail view. Free-text fields (typography,
+// lighting, ...) wrap; short ones stay on the line.
+function DnaField({ label, value, mono }) {
+  if (!value) return null;
   return (
-    <div className="card" style={{ padding: 16, borderColor: "var(--cy-line)" }}>
-      <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
-        {dna.source_poster_url && (
-          <a href={dna.source_poster_url} target="_blank" rel="noopener"
-             style={{ flexShrink: 0, width: 52, height: 52, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)", background: "var(--surface-2)" }}>
-            <img src={dna.source_poster_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          </a>
-        )}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 14, padding: "9px 0", borderTop: "1px solid var(--line)" }}>
+      <div className="mono" style={{ fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-4)", paddingTop: 2 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--fg-2)", lineHeight: 1.55, fontFamily: mono ? "var(--f-mono)" : undefined }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// The full Style DNA, including everything the card has no room for.
+//
+// Worth its own view because a DNA is a contract: every field here is fed to the
+// image model on each consistency-mode poster, so "what am I actually reusing?"
+// deserves a real answer rather than a guess from six colour swatches.
+function StyleDnaModal({ dna, onClose }) {
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const approved = dna.status === "approved";
+  const fmtDate = (d) => { try { return new Date(d).toLocaleString(); } catch (_) { return String(d); } };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        background: "rgba(8,8,10,0.72)", backdropFilter: "blur(4px)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+      }}
+    >
+      <div
+        className="card"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: "min(680px, 100%)", maxHeight: "86vh", overflowY: "auto", padding: 22, cursor: "default" }}
+      >
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
+          <div style={{ minWidth: 0 }}>
+            <div className="mono" style={{ fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--cy)", marginBottom: 6 }}>
+              Style DNA
+            </div>
+            <div style={{ fontFamily: "var(--f-display)", fontSize: 20, letterSpacing: "-0.01em", wordBreak: "break-word" }}>
               {dna.tournament_id}
             </div>
-            <span className={"badge" + (approved ? " ok" : "")} style={{ flexShrink: 0 }}>
+          </div>
+          <div className="row" style={{ gap: 8, flexShrink: 0 }}>
+            <span className={"badge" + (approved ? " ok" : "")}>
               {approved ? <><span className="dot" />Approved</> : "Draft"}
             </span>
+            <button className="btn btn-ghost" onClick={onClose} title="Close (Esc)" aria-label="Close" style={{ padding: "6px 8px" }}>
+              <Icon name="cross" size={14} />
+            </button>
           </div>
-          <div className="row" style={{ gap: 4, marginTop: 10, flexWrap: "wrap" }}>
-            {(dna.palette || []).slice(0, 6).map((c) => (
-              <div key={c} title={c} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: "1px solid var(--line)" }} />
-            ))}
+        </div>
+
+        <div className="row" style={{ gap: 16, alignItems: "flex-start", marginBottom: 6 }}>
+          {dna.source_poster_url && (
+            <a href={dna.source_poster_url} target="_blank" rel="noopener" title="Open the source poster"
+               style={{ flexShrink: 0, width: 132, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <img src={dna.source_poster_url} alt="Poster this style was extracted from" style={{ width: "100%", display: "block" }} />
+            </a>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="mono" style={{ fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-4)", marginBottom: 8 }}>
+              Palette{dna.color_temperature ? ` · ${dna.color_temperature}` : ""}
+            </div>
+            <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+              {(dna.palette || []).map((c) => (
+                <div key={c} title={c} style={{ textAlign: "center" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 6, background: c, border: "1px solid var(--line)" }} />
+                  <div className="mono" style={{ fontSize: 8.5, color: "var(--fg-4)", marginTop: 4 }}>{c}</div>
+                </div>
+              ))}
+              {(dna.palette || []).length === 0 && (
+                <span style={{ fontSize: 12, color: "var(--fg-4)" }}>No palette captured.</span>
+              )}
+            </div>
           </div>
-          <div className="mono" style={{ fontSize: 10.5, color: "var(--fg-3)", letterSpacing: "0.05em", textTransform: "uppercase", marginTop: 10 }}>
-            {[dna.energy, dna.lighting].filter(Boolean).join(" · ") || "—"}
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          {/* Typography first — it is the reason this view exists: captured and
+              sent to the model on every poster, but invisible until now. */}
+          <DnaField label="Typography" value={dna.typography} />
+          <DnaField label="Lighting" value={dna.lighting} />
+          <DnaField label="Atmosphere" value={dna.atmosphere} />
+          <DnaField label="Particle effects" value={dna.particle_effects} />
+          <DnaField label="Energy" value={dna.energy} />
+          <DnaField label="Style keywords" value={dna.sd_style_keywords} />
+          <DnaField label="Created" value={dna.created_at ? fmtDate(dna.created_at) : null} mono />
+          <DnaField label="Approved" value={dna.approved_at ? fmtDate(dna.approved_at) : null} mono />
+          <DnaField label="Source poster" value={dna.source_poster_path} mono />
+        </div>
+
+        {!dna.typography && (
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--fg-4)", marginTop: 14, lineHeight: 1.6 }}>
+            No typography captured — this DNA predates text-style capture.
+            Re-extract it from a poster to pick it up.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function StyleDnaCard({ dna, navigate }) {
+  const approved = dna.status === "approved";
+  const [open, setOpen] = React.useState(false);
+
+  // The thumbnail keeps its own link to the full-size poster, so a click there
+  // must not also open the detail view.
+  const stop = (e) => e.stopPropagation();
+
+  return (
+    <>
+      <div
+        className="card"
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(true); } }}
+        title="View the full style — typography, lighting, atmosphere, effects"
+        style={{ padding: 16, borderColor: "var(--cy-line)", cursor: "pointer" }}
+      >
+        <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
+          {dna.source_poster_url && (
+            <a href={dna.source_poster_url} target="_blank" rel="noopener" onClick={stop}
+               style={{ flexShrink: 0, width: 52, height: 52, borderRadius: 8, overflow: "hidden", border: "1px solid var(--line)", background: "var(--surface-2)" }}>
+              <img src={dna.source_poster_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            </a>
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {dna.tournament_id}
+              </div>
+              <span className={"badge" + (approved ? " ok" : "")} style={{ flexShrink: 0 }}>
+                {approved ? <><span className="dot" />Approved</> : "Draft"}
+              </span>
+            </div>
+            <div className="row" style={{ gap: 4, marginTop: 10, flexWrap: "wrap" }}>
+              {(dna.palette || []).slice(0, 6).map((c) => (
+                <div key={c} title={c} style={{ width: 20, height: 20, borderRadius: 4, background: c, border: "1px solid var(--line)" }} />
+              ))}
+            </div>
+            {dna.typography && (
+              <div style={{ fontSize: 11.5, color: "var(--fg-2)", marginTop: 10, lineHeight: 1.45,
+                            display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                <Icon name="edit" size={11} /> {dna.typography}
+              </div>
+            )}
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 10 }}>
+              <div className="mono" style={{ fontSize: 10.5, color: "var(--fg-3)", letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                {[dna.energy, dna.lighting].filter(Boolean).join(" · ") || "—"}
+              </div>
+              <span className="mono" style={{ fontSize: 9.5, color: "var(--cy)", letterSpacing: "0.1em", textTransform: "uppercase", flexShrink: 0 }}>
+                Details <Icon name="chevron_right" size={10} />
+              </span>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+      {open && <StyleDnaModal dna={dna} onClose={() => setOpen(false)} />}
+    </>
   );
 }
 

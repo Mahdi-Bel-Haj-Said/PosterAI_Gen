@@ -69,10 +69,11 @@ def client(store, org_store, monkeypatch) -> TestClient:
     app.dependency_overrides[posters_route.get_job_store] = lambda: store
     app.dependency_overrides[api_deps.get_org_store] = lambda: org_store
 
-    def fake_enqueue(*, input_data, org_id, tournament_id, mode, platform_id=None, settings=None):
+    def fake_enqueue(*, input_data, org_id, tournament_id, mode, platform_id=None,
+                     idempotency_key=None, settings=None):
         return store.create(
             input_data=input_data, org_id=org_id, tournament_id=tournament_id,
-            mode=mode, platform_id=platform_id,
+            mode=mode, platform_id=platform_id, idempotency_key=idempotency_key,
         )
 
     monkeypatch.setattr(posters_route, "enqueue_poster_job", fake_enqueue)
