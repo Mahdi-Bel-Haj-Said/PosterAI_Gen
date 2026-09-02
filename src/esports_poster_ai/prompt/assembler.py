@@ -17,11 +17,16 @@ from esports_poster_ai.prompt.blocks.consistency import build_consistency_block
 from esports_poster_ai.prompt.blocks.design import build_design_block, resolve_color_mode
 from esports_poster_ai.prompt.blocks.game_logo import build_game_logo_block
 from esports_poster_ai.prompt.blocks.game_rules import build_game_rules_block
+from esports_poster_ai.prompt.blocks.layout import (
+    build_layout_block,
+    build_roster_arrangement_block,
+)
 from esports_poster_ai.prompt.blocks.poster_type import POSTER_TYPE_BLOCKS
 from esports_poster_ai.prompt.blocks.sponsors import build_sponsor_block
 from esports_poster_ai.prompt.blocks.typography import build_typography_block
 from esports_poster_ai.prompt.blocks.static import (
     BACKGROUND_ANALYSIS_BLOCK,
+    FACT_HIERARCHY_BLOCK,
     FACTUAL_TEXT_BLOCK,
     OUTPUT_RULES_BLOCK,
 )
@@ -75,12 +80,85 @@ def _team_name(team: Dict[str, Any], fallback: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _match_reference_map(input_data: Dict[str, Any]) -> List[str]:
+    """Explicit reference-image-index → role mapping for match posters.
+
+    `_extract_input_images` in modes/fresh.py builds the reference list in this
+    exact order and SKIPS every candidate without a path, so the indices shift
+    with whatever the user actually supplied. With just two team logos the model
+    can infer the mapping from the VS layout; add a tournament logo and it has to
+    guess, which is how a team logo ends up merged with the tournament mark,
+    rendered in the wrong slot, or dropped. Stating the order removes the guess.
+
+    Mirrors the roster mapping in `_roster_reveal_meta`, and must be kept in step
+    with `_extract_input_images`.
+    """
+    match = _dict(input_data, "match")
+    team1 = _dict(match, "team1")
+    team2 = _dict(match, "team2")
+    tournament = _dict(input_data, "tournament")
+    player = _dict(input_data, "player_feature")
+
+    entries: List[str] = []
+    idx = 1
+
+    if _is_non_empty_str(team1.get("logo_path")):
+        entries.append(
+            f"  - Reference image #{idx}: TEAM LOGO → {_team_name(team1, 'Team 1')}"
+        )
+        idx += 1
+    if _is_non_empty_str(team2.get("logo_path")):
+        entries.append(
+            f"  - Reference image #{idx}: TEAM LOGO → {_team_name(team2, 'Team 2')}"
+        )
+        idx += 1
+    if _is_non_empty_str(tournament.get("logo_path")):
+        label = tournament.get("name") if _is_non_empty_str(tournament.get("name")) else "tournament"
+        entries.append(
+            f"  - Reference image #{idx}: TOURNAMENT LOGO ({label}) → NOT a team logo"
+        )
+        idx += 1
+    if player.get("enabled") is True and _is_non_empty_str(player.get("image_path")):
+        entries.append(f"  - Reference image #{idx}: FEATURED PLAYER PHOTO")
+        idx += 1
+
+    # `_extract_input_images` appends the official game wordmark last, when one
+    # is configured for the game.
+    from esports_poster_ai.brand import has_game_logo
+
+    if has_game_logo(_dict(input_data, "_meta").get("game")):
+        entries.append(
+            f"  - Reference image #{idx}: OFFICIAL GAME LOGO (wordmark) → NOT a "
+            "team or tournament logo"
+        )
+
+    # One reference cannot be confused with another.
+    if len(entries) < 2:
+        return []
+
+    lines = [
+        "- Reference image mapping (strict 1:1 with the order the images are "
+        "supplied — do NOT swap):"
+    ]
+    lines.extend(entries)
+    lines.append(
+        "- PLACEMENT RULE: each reference image is a DISTINCT asset with its own "
+        "slot. Render every one of them exactly once, reproducing each mark as "
+        "supplied. Never merge two of them into one graphic, never use the "
+        "tournament logo or the game wordmark in a team's slot, and never reuse "
+        "one team's mark for the other team. Adding a tournament logo does NOT "
+        "change where the team logos go — both teams keep their own full-size "
+        "marks in the VS layout."
+    )
+    return lines
+
+
 def _gameday_meta(input_data: Dict[str, Any]) -> List[str]:
     tournament = _dict(input_data, "tournament")
     match = _dict(input_data, "match")
     team1 = _dict(match, "team1")
     team2 = _dict(match, "team2")
-    return _kv_lines(
+    lines = _kv_lines(
         [
             ("Team 1", team1.get("name")),
             ("Team 2", team2.get("name")),
@@ -93,6 +171,8 @@ def _gameday_meta(input_data: Dict[str, Any]) -> List[str]:
             ("Stream", _stream_value(_dict(input_data, "stream"))),
         ]
     )
+    lines.extend(_match_reference_map(input_data))
+    return lines
 
 
 def _game_results_meta(input_data: Dict[str, Any]) -> List[str]:
@@ -156,6 +236,7 @@ def _game_results_meta(input_data: Dict[str, Any]) -> List[str]:
             mvp_str += f" — {stat_label}: {stat_value}"
         lines.append(f"- MVP: {mvp_str}")
 
+    lines.extend(_match_reference_map(input_data))
     return lines
 
 
@@ -218,11 +299,12 @@ def _roster_reveal_meta(input_data: Dict[str, Any]) -> List[str]:
             )
             lines.extend(mapping_lines)
             lines.append(
-                "- PLACEMENT RULE: Each player photo MUST be placed in that player's "
-                "own card slot. The IGN rendered beneath/beside a photo MUST match "
-                "that photo. Never reuse one player's face for another. If a "
-                "referenced photo is unavailable, leave the corresponding slot "
-                "empty rather than substituting another player's face."
+                "- PLACEMENT RULE: Each player photo MUST occupy that player's own "
+                "position in the roster arrangement, whatever shape that arrangement "
+                "takes. The IGN rendered beside a photo MUST match that photo. Never "
+                "reuse one player's face for another. If a referenced photo is "
+                "unavailable, leave that position empty rather than substituting "
+                "another player's face."
             )
 
         # Players without a provided photo must NOT get an invented face — the #1
@@ -246,20 +328,49 @@ def _roster_reveal_meta(input_data: Dict[str, Any]) -> List[str]:
             )
             lines.append(
                 f"- NO-PHOTO PLAYERS — CRITICAL: {who} have NO photo supplied. Render "
-                "each such player's card with the IGN + role as TEXT ONLY and NO "
-                "portrait — at most a neutral, faceless silhouette or a monogram / "
-                "initial placeholder in the photo area. Do NOT invent, generate, "
+                "each such player with the IGN + role as TEXT ONLY and NO portrait — "
+                "at most a neutral, faceless silhouette or a monogram / initial "
+                "placeholder where their portrait would sit. Do NOT invent, generate, "
                 "imagine, or hallucinate any human face, headshot, or player likeness "
                 "for a player without a provided photo. A fabricated face is a hard "
-                "failure — an empty/text-only card is correct."
+                "failure — an empty, text-only position is correct."
             )
 
     return lines
 
 
+def _creative_copy_lines(tournament: Dict[str, Any]) -> List[str]:
+    """Tagline / sub-tagline, deliberately kept OUT of the factual key-value list.
+
+    Emitted as `- Tagline: X` alongside the dates and the prize pool, these read
+    to the image model as data fields, and it rendered the field name onto the
+    poster as a caption — a literal "TAGLINE:" above the words. A tagline is
+    styled marketing copy, so it is emitted here as creative copy instead, and
+    excluded from the fact hierarchy.
+    """
+    entries: List[str] = []
+    if _is_non_empty_str(tournament.get("tagline")):
+        entries.append(f"  - Headline statement: {tournament.get('tagline')}")
+    if _is_non_empty_str(tournament.get("sub_tagline")):
+        entries.append(f"  - Supporting statement: {tournament.get('sub_tagline')}")
+    if not entries:
+        return []
+
+    lines = [
+        "- CREATIVE COPY — the lines below are styled marketing text, NOT data "
+        "fields. Render the words exactly as written, as bare styled copy with NO "
+        "caption, label, or field name in front of them and no quotation marks "
+        "around them. The words \"tagline\", \"sub-tagline\", \"headline "
+        "statement\", and \"supporting statement\" are internal names and must "
+        "NEVER appear on the poster:"
+    ]
+    lines.extend(entries)
+    return lines
+
+
 def _tournament_announcement_meta(input_data: Dict[str, Any]) -> List[str]:
     t = _dict(input_data, "tournament")
-    return _kv_lines(
+    lines = _kv_lines(
         [
             ("Tournament", t.get("name")),
             ("Start Date", t.get("start_date")),
@@ -268,24 +379,25 @@ def _tournament_announcement_meta(input_data: Dict[str, Any]) -> List[str]:
             ("Teams Competing", t.get("teams_count")),
             ("Format", t.get("format")),
             ("Circuit", t.get("circuit")),
-            ("Tagline", t.get("tagline")),
-            ("Sub-tagline", t.get("sub_tagline")),
         ]
     )
+    lines.extend(_creative_copy_lines(t))
+    return lines
 
 
 def _tournament_banner_meta(input_data: Dict[str, Any]) -> List[str]:
     t = _dict(input_data, "tournament")
-    return _kv_lines(
+    lines = _kv_lines(
         [
             ("Tournament", t.get("name")),
             ("Date Range", t.get("date_range")),
             ("Location", t.get("location")),
             ("Prize Pool", t.get("prize_pool")),
             ("Circuit", t.get("circuit")),
-            ("Tagline", t.get("tagline")),
         ]
     )
+    lines.extend(_creative_copy_lines(t))
+    return lines
 
 
 _METADATA_BUILDERS = {
@@ -319,7 +431,15 @@ RENDER RULES — HIGHEST PRIORITY, override anything above that conflicts:
 - Do NOT use real-world knowledge about these teams, players, or tournament.
   Treat the logos purely as graphics.
 - Any text beyond the FACTUAL DATA must be purely decorative (hero title,
-  hype/result phrase) and must never look like a name, score, or date."""
+  hype/result phrase) and must never look like a name, score, or date.
+- The text BEFORE each colon is a field name for your understanding, not poster
+  copy. Never render "Game", "Poster Type", "Tagline", "Sub-tagline", "Headline
+  statement", or "Supporting statement" anywhere on the poster. A short caption
+  such as PRIZE POOL or START DATE above a data value is fine; a caption in front
+  of the creative copy is NOT.
+- The FACTUAL DATA above is listed for ACCURACY, not importance — it is not a
+  ranking and not a layout. Visual weight follows the FACT HIERARCHY stated in
+  the prompt above: do not render every value at the same size."""
 
 
 def build_image_factual_footer(input_data: Dict[str, Any]) -> str:
@@ -349,6 +469,10 @@ colors and mood wherever they conflict with the directives above:
   that hue clearly dominates the finished poster.
 - Treat the vibe and energy above as the overall mood and composition density
   of the poster, not a minor accent.
+- Scale the TEXT effects to that energy: at chill or balanced energy the hero
+  title is cleanly lit with crisp edges — no particles crossing the letters,
+  no chromatic aberration, no glow bleeding off the letterforms. Only intense
+  and explosive get the heavy particle-and-aberration treatment.
 - These are deliberate creative directions from the user. Do NOT fall back to
   the source background's original palette or mood because it looks safer."""
 
@@ -451,7 +575,9 @@ def build_prompt(input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]]
     6. asset_block                         — always
     7. visual-style block                  — consistency DNA, else design block
     8. sponsor-bar reservation              — only when sponsors.enabled
-    9. OUTPUT_RULES_BLOCK                  — always
+    9. layout-pattern block                — always (pick ONE pattern)
+   10. FACT_HIERARCHY_BLOCK                — always (rank the facts)
+   11. OUTPUT_RULES_BLOCK                  — always
     """
     decisions = route(input_data, style_dna=style_dna)
     poster_type = decisions.get("poster_type")
@@ -501,6 +627,24 @@ def build_prompt(input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]]
     sponsor_block = build_sponsor_block(input_data)
     if sponsor_block:
         parts.append(sponsor_block)
+
+    # Composition pattern: the model commits to ONE named layout pattern,
+    # chosen from the format, the content volume, and the background it can
+    # actually see — so posters stop defaulting to the same stacked
+    # top/middle/bottom band. Placed last of the content blocks so the choice
+    # is made with metadata, assets, style, and the sponsor strip already read.
+    parts.append(build_layout_block(input_data))
+
+    # Roster reveals only: vary how the five player photos are presented, so
+    # every roster stops coming back as the same five rectangles.
+    roster_arrangement = build_roster_arrangement_block(input_data)
+    if roster_arrangement:
+        parts.append(roster_arrangement)
+
+    # Weight: the layout block says WHERE each fact goes, this one says how
+    # BIG. Without it every factual value renders at one shared size and a
+    # prize pool reads no louder than a team count.
+    parts.append(FACT_HIERARCHY_BLOCK)
 
     parts.append(OUTPUT_RULES_BLOCK)
     return "\n\n".join([p.strip() for p in parts if p and p.strip()])

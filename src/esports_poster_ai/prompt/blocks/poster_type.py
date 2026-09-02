@@ -29,14 +29,15 @@ IF GAME_RESULTS:
 IF ROSTER_REVEAL:
   - Hero title: "THE ROSTER" or "MEET THE TEAM" — largest text element
   - Team logo: large and prominent
-  - Show up to 5 player cards in a structured horizontal or vertical layout
-  - Each card: IGN (large) + role (small) + photo ONLY IF a photo is provided for
-    that player + flag (if provided)
-  - Players WITHOUT a provided photo: render a clean card with the IGN + role as
-    TEXT ONLY and NO portrait — a neutral faceless silhouette or a monogram at
-    most. NEVER invent, generate, or hallucinate a face/headshot for a player
-    whose photo was not supplied (a fabricated face is a hard failure).
-  - NEW badge on player cards where is_new_signing is true
+  - Present up to 5 players. HOW they are arranged is set by the ROSTER
+    ARRANGEMENT block — do NOT default to five rectangular cards in a row
+  - Each player: IGN (large) + role (small) + photo ONLY IF a photo is provided
+    for that player + flag (if provided)
+  - Players WITHOUT a provided photo: render their IGN + role as TEXT ONLY and NO
+    portrait — a neutral faceless silhouette or a monogram at most. NEVER invent,
+    generate, or hallucinate a face/headshot for a player whose photo was not
+    supplied (a fabricated face is a hard failure).
+  - NEW badge beside players where is_new_signing is true
   - Head coach name at bottom if provided
   - Season / split identifier at bottom if provided
     """.strip(),

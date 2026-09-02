@@ -50,6 +50,20 @@ _TITLE_FINISHES = [
     "liquid molten-metal",
 ]
 
+# Finishes that are themselves a light source. At chill / balanced energy they
+# fight the reduced text-effect intensity — a "molten glowing energy" title
+# reads heavy no matter how few particles cross it — so they are held back for
+# the high-energy levels.
+_GLOWING_FINISHES = {
+    "molten glowing energy",
+    "neon tube glow",
+    "holographic iridescent foil",
+    "liquid molten-metal",
+}
+
+_CALM_ENERGIES = {"chill", "balanced"}
+
+
 # Creative copy (tagline / hype phrase) STYLES — must differ from the hero title.
 # Dropped marker-scrawl and graffiti-tag (come out messy).
 _TAGLINE_STYLES = [
@@ -68,8 +82,17 @@ def build_typography_block(
 ) -> str:
     """A per-poster typography direction that overrides the generic default type."""
     r = rng or random
+
+    design = input_data.get("design") if isinstance(input_data, dict) else None
+    energy = design.get("energy") if isinstance(design, dict) else None
+    energy = (energy if isinstance(energy, str) else "").strip().lower() or "balanced"
+
+    finishes = _TITLE_FINISHES
+    if energy in _CALM_ENERGIES:
+        finishes = [f for f in _TITLE_FINISHES if f not in _GLOWING_FINISHES]
+
     typeface = r.choice(_TITLE_TYPEFACES)
-    finish = r.choice(_TITLE_FINISHES)
+    finish = r.choice(finishes)
     tagline = r.choice(_TAGLINE_STYLES)
     return f"""
 TYPOGRAPHY DIRECTION — vary the type so posters don't all look the same. This

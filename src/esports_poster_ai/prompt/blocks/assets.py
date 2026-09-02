@@ -49,7 +49,12 @@ def build_asset_block(input_data: Dict[str, Any]) -> str:
     tournament_logo = _get(input_data, ["tournament", "logo_path"])
     if tournament_logo is not None:
         if _is_non_empty_str(tournament_logo):
-            lines.append("- Tournament logo available: integrate near tournament name without overpowering hero title.")
+            lines.append(
+                "- Tournament logo available: the real logo is supplied as a "
+                "reference image. Reproduce it EXACTLY as given (no redraw, "
+                "restyle, recolor, re-letter, or added effects) and place it near "
+                "the tournament name without overpowering the hero title."
+            )
         else:
             lines.append("- Tournament logo not provided: use stylized tournament text only.")
 
