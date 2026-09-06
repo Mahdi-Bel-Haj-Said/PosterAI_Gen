@@ -1,0 +1,28 @@
+# Our own Redis instance — NOT Defendr's.
+#
+# Why a second instance rather than a different database index on theirs:
+# Redis cannot scope a password to one database, and FLUSHALL clears all 16 at
+# once. Sharing would mean a cache clear on their side silently destroys our
+# job queue, with in-flight posters lost and no error anywhere.
+#
+# Install:
+#   sudo cp /etc/redis/redis.conf /etc/redis/redis-poster.conf
+#   # then apply the settings below to the COPY — never to redis.conf
+#   sudo mkdir -p /var/lib/redis-poster && sudo chown redis:redis /var/lib/redis-poster
+#   sudo systemctl enable --now redis-server@redis-poster
+
+port 6380
+requirepass <generate-a-strong-password>
+
+dir /var/lib/redis-poster
+dbfilename poster.rdb
+
+# A queue must survive a restart. Redis defaults to periodic snapshots, so a
+# crash can lose the last few minutes — which here means losing jobs users
+# have already been charged for.
+appendonly yes
+appendfilename "poster.aof"
+
+# Never reachable from outside the box.
+bind 127.0.0.1 -::1
+protected-mode yes

@@ -1,0 +1,42 @@
+# EsportsPostAI — RQ worker. This is the half that actually generates.
+#
+# A stopped worker is a SILENT failure: submissions still return 202 and then
+# never progress, because nothing errored. Restart=always is not optional —
+# RQ deliberately exits on a Redis connection timeout rather than reconnecting,
+# so without it a brief Redis blip stops all generation until someone notices.
+
+[Unit]
+Description=EsportsPostAI worker (poster-ai, epai-webhooks)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epai
+Group=epai
+WorkingDirectory=/opt/epai
+EnvironmentFile=/opt/epai/.env
+ExecStart=/opt/epai/.venv/bin/rq worker poster-ai epai-webhooks --url ${REDIS_URL}
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/epai/scratch
+
+# ── Memory ceiling ───────────────────────────────────────────────────────────
+# The worker is the heavier of the two: it loads the imaging stack (onnxruntime,
+# numpy, OpenCV) on first use and holds poster bitmaps while compositing.
+# Observed peak is well under 1G; the cap exists so a leak or a pathological
+# image cannot push the box into an OOM that kills Defendr's MongoDB.
+#
+# If the worker is being killed repeatedly under normal load, raise this rather
+# than removing it — journalctl will show 'memory-max' as the reason.
+MemoryMax=1G
+MemoryHigh=768M
+
+[Install]
+WantedBy=multi-user.target

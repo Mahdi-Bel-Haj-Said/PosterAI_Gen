@@ -1,0 +1,45 @@
+# EsportsPostAI — HTTP API.
+#
+# Install:  sudo cp deploy/epai-api.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now epai-api
+#
+# Pairs with epai-worker.service. Both must run: this process validates and
+# enqueues, the worker generates. Restart BOTH on every deploy — each loads the
+# pipeline at start-up, so restarting only one leaves the other on old code.
+
+[Unit]
+Description=EsportsPostAI API
+After=network-headless.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epai
+Group=epai
+WorkingDirectory=/opt/epai
+EnvironmentFile=/opt/epai/.env
+ExecStart=/opt/epai/.venv/bin/python -m esports_poster_ai.api
+
+Restart=always
+RestartSec=5
+
+# The service reads its own code and writes nothing outside its directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/epai/scratch
+
+# ── Memory ceiling ───────────────────────────────────────────────────────────
+# The box is shared with Defendr's production MongoDB. Without a cap, a runaway
+# process here could exhaust RAM and let the kernel's OOM killer pick a victim —
+# and it usually picks the largest process, which is Mongo. That would take
+# Defendr down for a reason that looks unrelated to this service.
+#
+# With MemoryMax, systemd kills THIS service instead, and Restart=always brings
+# it back. Our problem stays our problem.
+MemoryMax=512M
+MemoryHigh=384M
+
+[Install]
+WantedBy=multi-user.target
