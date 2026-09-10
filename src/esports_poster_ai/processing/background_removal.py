@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import tempfile
+from pathlib import Path
 from threading import Lock
 from typing import Optional
 
@@ -40,11 +43,40 @@ _session_lock = Lock()
 _session_cache: dict = {}
 
 
+def _resolve_model_home() -> str:
+    """
+    Pick a writable cache directory for the ONNX model.
+
+    `rembg` downloads to `~/.u2net`. Under a systemd unit with
+    `ProtectHome=true` that path is unreachable, the download fails, and because
+    removal degrades silently (see the `except` in `remove_background`) the only
+    symptom is uploaded logos quietly keeping their backgrounds — no error
+    anywhere. Prefer the real home when it is usable so dev machines keep their
+    existing cache, and fall back to the temp directory when it is not.
+
+    Set `U2NET_HOME` explicitly to a persistent, writable path to avoid
+    re-downloading the ~4 MB model after every restart.
+    """
+    try:
+        home = Path.home() / ".u2net"
+        home.mkdir(parents=True, exist_ok=True)
+        if os.access(home, os.W_OK):
+            return str(home)
+    except (OSError, RuntimeError):
+        # No home directory, or it is read-only — fall through.
+        pass
+    return str(Path(tempfile.gettempdir()) / "epai-u2net")
+
+
 def _get_session(model_name: str):
     """Lazy, cached `rembg` session — pay model-load cost once per worker."""
     with _session_lock:
         sess = _session_cache.get(model_name)
         if sess is None:
+            # Must be set before rembg resolves its model path on import/use.
+            # `setdefault` so an operator-provided value always wins.
+            os.environ.setdefault("U2NET_HOME", _resolve_model_home())
+
             from rembg import new_session  # local import keeps import cost lazy
 
             sess = new_session(model_name)

@@ -123,7 +123,7 @@ def process_job(job_id: str) -> None:
             job_id,
             poster_id=result.poster_id,
             storage_key=result.storage_key,
-            local_path=str(result.local_path),
+            local_path=str(result.local_path) if result.local_path else None,
         )
         commit_serve_scope()  # success — the served bank image stays consumed
         _charge_coins(job)  # success only — failed posters are free

@@ -8,6 +8,7 @@ reading `os.environ` directly.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -16,9 +17,42 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# Project root = repo root. From this file: parents[0]=esports_poster_ai,
-# parents[1]=src, parents[2]=repo root.
-PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+def _detect_project_root(start: Optional[Path] = None) -> Path:
+    """
+    Locate the repo root, whichever way the package was installed.
+
+    This used to be `Path(__file__).resolve().parents[2]`, which is only correct
+    while the package sits in `src/`. A plain `pip install .` copies it into
+    `site-packages`, where the same arithmetic lands on `<venv>/lib/pythonX.Y`
+    and every data directory resolves inside the virtualenv — the pipeline then
+    dies on a missing `backgrounds/` that is present all along. That is a
+    deployment failure with no obvious cause, so the root is now discovered by
+    looking for a marker rather than by counting directories.
+
+    Order: explicit override, then the nearest ancestor holding `pyproject.toml`
+    (which covers both the `src/` layout and a venv living inside the repo),
+    then the working directory when it looks like the project — systemd sets
+    `WorkingDirectory` to the install root.
+    """
+    override = os.getenv("EPAI_PROJECT_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    here = (start or Path(__file__)).resolve()
+    for parent in here.parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent
+
+    cwd = Path.cwd().resolve()
+    if (cwd / "pyproject.toml").is_file() or (cwd / "backgrounds").is_dir():
+        return cwd
+
+    # Nothing identifiable. Keep the historical answer so a source checkout
+    # behaves exactly as before rather than failing in a new way.
+    return here.parents[2] if len(here.parents) > 2 else here.parent
+
+
+PROJECT_ROOT: Path = _detect_project_root()
 
 
 class Settings(BaseSettings):

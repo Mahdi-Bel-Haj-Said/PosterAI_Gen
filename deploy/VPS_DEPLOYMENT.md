@@ -329,7 +329,14 @@ sudo .venv/bin/pip install --upgrade pip
 # Dependencies are declared in pyproject.toml — there is no requirements.txt.
 # This takes several minutes and downloads ~1 GB, mostly onnxruntime and the
 # numerical stack behind the background remover.
-sudo .venv/bin/pip install .
+#
+# NOTE THE -e. Install editable, so the package keeps running from this
+# directory instead of being copied into the virtualenv. A plain
+# `pip install .` also works, but leaves the code in site-packages, where a
+# future change to how the service finds its data directories has one less
+# way to go wrong. Editable also means a deploy is `git pull` + restart,
+# with no reinstall unless dependencies changed.
+sudo .venv/bin/pip install -e .
 
 sudo mkdir -p /opt/epai/scratch
 sudo chown -R epai:epai /opt/epai

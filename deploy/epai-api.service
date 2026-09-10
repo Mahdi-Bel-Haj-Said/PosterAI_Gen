@@ -12,6 +12,11 @@ Description=EsportsPostAI API
 After=network-headless.target
 Wants=network-online.target
 
+# INSTALL PATH: every path below assumes /opt/epai. If you install anywhere
+# else, change ALL of them together — WorkingDirectory, EnvironmentFile,
+# ExecStart and ReadWritePaths. A stale ReadWritePaths is not a visible error:
+# ProtectSystem=strict then leaves the service with nowhere to write at all.
+
 [Service]
 Type=simple
 User=epai
@@ -29,6 +34,13 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/opt/epai/scratch
+
+# systemd creates /var/lib/epai, owns it to User= above, and keeps it
+# writable under ProtectSystem=strict. Point OUTPUTS_DIR and U2NET_HOME at
+# it in the .env for a local poster copy and a persistent rembg model cache.
+# Neither is required — the service degrades cleanly without them — but the
+# model is re-downloaded on every restart if U2NET_HOME is unset.
+StateDirectory=epai
 
 # ── Memory ceiling ───────────────────────────────────────────────────────────
 # The box is shared with Defendr's production MongoDB. Without a cap, a runaway

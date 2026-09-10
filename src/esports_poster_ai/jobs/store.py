@@ -405,7 +405,7 @@ class JobStore:
         *,
         poster_id: str,
         storage_key: str,
-        local_path: str,
+        local_path: Optional[str] = None,
     ) -> None:
         self._col.update_one(
             {"_id": job_id},

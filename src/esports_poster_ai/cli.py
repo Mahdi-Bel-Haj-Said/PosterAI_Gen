@@ -113,7 +113,8 @@ def _run_generation(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         result = run_fresh(input_data, org_id=args.org_id, tournament_id=tournament_id)
 
     print("\nPoster generated:")
-    print(f"  local:      {result.local_path}")
+    if result.local_path:
+        print(f"  local:      {result.local_path}")
     print(f"  storage:    {result.storage_key}")
     print(f"  signed URL: {result.signed_url}")
     return 0
@@ -159,7 +160,8 @@ def _run_job_status(args: argparse.Namespace, parser: argparse.ArgumentParser) -
         from esports_poster_ai.storage import get_storage
 
         print(f"  poster_id: {job.poster_id}")
-        print(f"  local:     {job.local_path}")
+        if job.local_path:
+            print(f"  local:     {job.local_path}")
         print(f"  storage:   {job.storage_key}")
         print(f"  signed URL: {get_storage().signed_url(job.storage_key)}")
     elif job.status == "failed":

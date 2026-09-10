@@ -43,7 +43,9 @@ class PosterResult:
     """Where a generated poster landed."""
 
     poster_id: str
-    local_path: Path
+    # None when the local convenience copy could not be written (read-only or
+    # sandboxed filesystem). `storage_key` / `signed_url` are the real result.
+    local_path: Optional[Path]
     storage_key: str
     signed_url: str
 
@@ -109,11 +111,26 @@ def save_poster(
     image.convert("RGB").save(buf, format="PNG")
     png_bytes = buf.getvalue()
 
-    # Local copy.
+    # Local copy — a convenience for CLI runs, never the system of record.
+    #
+    # Best-effort on purpose. This used to be an unguarded write placed *before*
+    # the upload, so on a host where the directory is not writable — a systemd
+    # unit with `ProtectSystem=strict`, a read-only container — a poster that had
+    # already been generated, and paid for, was discarded one line before it
+    # would have been stored. Object storage is what callers actually read from,
+    # so a failure here must not cost the image.
     out_root = (outputs_dir or s.outputs_dir).resolve()
-    out_root.mkdir(parents=True, exist_ok=True)
-    local_path = (out_root / f"{poster_id}.png").resolve()
-    local_path.write_bytes(png_bytes)
+    local_path: Optional[Path] = None
+    try:
+        out_root.mkdir(parents=True, exist_ok=True)
+        candidate = (out_root / f"{poster_id}.png").resolve()
+        candidate.write_bytes(png_bytes)
+        local_path = candidate
+    except OSError as e:
+        logger.warning(
+            "poster.local_copy_failed",
+            extra={"run_id": run_id, "path": str(out_root), "error": str(e)},
+        )
 
     # Object storage.
     key = keys.poster(org_id, tournament_id, poster_id)
