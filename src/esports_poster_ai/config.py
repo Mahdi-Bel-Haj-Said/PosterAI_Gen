@@ -68,6 +68,14 @@ class Settings(BaseSettings):
         default="gpt-image-2",
         description="Model used in the poster-generation stage.",
     )
+    openai_caption_model: str = Field(
+        default="gpt-4o-mini",
+        description=(
+            "Small, cheap text model for social captions (~100 tokens out). "
+            "Captions moved here from Gemini, whose API geo-blocks callers by "
+            "IP and is unreachable from some hosts regardless of configuration."
+        ),
+    )
     openai_prompt_builder_model: str = Field(
         default="gpt-4o-mini",
         description=(

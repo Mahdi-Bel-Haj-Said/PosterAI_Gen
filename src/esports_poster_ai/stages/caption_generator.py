@@ -39,8 +39,18 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from esports_poster_ai.clients.gemini_client import generate_text
+from esports_poster_ai.clients.openai_client import OpenAIClient
 from esports_poster_ai.domain.job import Job
+
+
+class CaptionError(RuntimeError):
+    """
+    A caption could not be produced.
+
+    Provider-agnostic on purpose: the route only needs to know the upstream
+    model failed, not which vendor it was. Captions ran on Gemini until its API
+    began refusing requests by caller location.
+    """
 
 logger = logging.getLogger(__name__)
 
@@ -611,14 +621,17 @@ def generate_caption_for_job(job: Job) -> str:
     """
     Produce a single social caption for ``job``. Caller persists.
 
-    Raises GeminiError on transport / API failures so the route layer can
+    Raises CaptionError on transport / API failures so the route layer can
     convert to a clean 502.
     """
     prompt = _build_prompt(job)
     # 300 output tokens is plenty for a 240-char caption + a hashtag line; the
     # extra headroom is for the model's planning tokens. temperature 0.85 keeps
     # output lively without going random.
-    raw = generate_text(prompt, temperature=0.85, max_output_tokens=300)
+    try:
+        raw = OpenAIClient().generate_text(prompt, temperature=0.85, max_output_tokens=300)
+    except Exception as exc:  # noqa: BLE001 — one failure shape for the route
+        raise CaptionError(str(exc)) from exc
     caption = _clean_caption(raw)
     logger.info(
         "caption.generated",

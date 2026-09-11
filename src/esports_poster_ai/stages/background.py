@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from esports_poster_ai.config import Settings, get_settings
+from esports_poster_ai.processing.remote_images import fetch_image_bytes, looks_like_url
 from esports_poster_ai.storage import get_storage
 from esports_poster_ai.storage.base import Storage, StorageError
 
@@ -94,9 +95,19 @@ def _read_user_background(
     project_root: Path,
     storage: Storage,
 ) -> Optional[bytes]:
-    """Read user-supplied bytes. Tries local fs first, then the configured storage."""
+    """Read user-supplied bytes: a URL, a local path, or an object-storage key."""
     if not isinstance(image_path, str) or not image_path.strip():
         return None
+
+    # An http(s) URL, the same way logo/player fields accept one in modes.fresh.
+    # Without this the background was the only asset field that did NOT accept a
+    # URL: callers sending one fell through to the system pool and silently got a
+    # stock background, with a correct-looking poster and no error anywhere.
+    if looks_like_url(image_path):
+        return fetch_image_bytes(
+            image_path.strip(),
+            allow_insecure=get_settings().webhook_allow_insecure_urls,
+        )
 
     p = Path(image_path)
     candidate = p if p.is_absolute() else (project_root / p).resolve()

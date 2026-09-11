@@ -38,29 +38,32 @@ function PosterResult({ navigate, jobId }) {
     return () => { cancelled = true; };
   }, [jobId]);
 
-  // Auto-generate the social caption once the job is loaded + completed and we
-  // don't already have one cached server-side. We fire it in the background so
-  // the page renders instantly; share buttons + native-post textarea fill in
-  // when it arrives.
-  React.useEffect(() => {
-    if (!job || job.status !== "completed" || caption) return;
-    let cancelled = false;
+  // Fetch the social caption ON DEMAND — when the user actually opens a share
+  // flow — never automatically on load.
+  //
+  // This used to run for every completed poster, which meant a model call for
+  // every poster generated. Most posters are never shared, so the large
+  // majority of those calls produced a caption nobody ever read, and each one
+  // was billed. Generating at the moment of sharing costs the user nothing in
+  // latency they notice (the modal opens immediately and the text fills in)
+  // and skips the call entirely for everyone who never shares.
+  //
+  // Safe to call repeatedly: it no-ops once a caption exists or a request is
+  // already in flight, so several share buttons cannot stack up requests.
+  const ensureCaption = React.useCallback(async () => {
+    if (!job || job.status !== "completed" || caption || captionBusy) return;
     setCaptionBusy(true);
     setCaptionError(null);
-    (async () => {
-      try {
-        const res = await window.api.generateCaption(job.job_id);
-        if (cancelled) return;
-        // res === null means GEMINI_API_KEY isn't set; silently skip.
-        if (res && res.caption) setCaption(res.caption);
-      } catch (e) {
-        if (!cancelled) setCaptionError(e.message);
-      } finally {
-        if (!cancelled) setCaptionBusy(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [job, caption]);
+    try {
+      const res = await window.api.generateCaption(job.job_id);
+      // res === null means no API key is configured; silently skip.
+      if (res && res.caption) setCaption(res.caption);
+    } catch (e) {
+      setCaptionError(e.message);
+    } finally {
+      setCaptionBusy(false);
+    }
+  }, [job, caption, captionBusy]);
 
   // Close the lightbox on Escape + lock background scroll while it's open.
   React.useEffect(() => {
@@ -113,6 +116,14 @@ function PosterResult({ navigate, jobId }) {
   // platform identifier the modal is configured for. Owned at the page level
   // so the modal can read the current caption + job in one place.
   const [shareModal, setShareModal] = React.useState(null);
+
+  // Opening a share flow is what triggers caption generation. Deliberately not
+  // awaited: the modal should appear instantly rather than waiting on a model
+  // call, and the textarea fills in when the text arrives.
+  const openShare = (platform) => {
+    ensureCaption();
+    setShareModal(platform);
+  };
 
   const extractDna = async () => {
     if (!job) return;
@@ -265,7 +276,7 @@ function PosterResult({ navigate, jobId }) {
                 <button
                   className="btn btn-ghost"
                   style={{ flex: 1, padding: "8px 4px" }}
-                  onClick={() => setShareModal("twitter")}
+                  onClick={() => openShare("twitter")}
                   disabled={!job.signed_url}
                   title="Quick share to X / Twitter"
                 >
@@ -275,7 +286,7 @@ function PosterResult({ navigate, jobId }) {
                 <button
                   className="btn btn-ghost"
                   style={{ flex: 1, padding: "8px 4px" }}
-                  onClick={() => setShareModal("facebook")}
+                  onClick={() => openShare("facebook")}
                   disabled={!job.signed_url}
                   title="Quick share to Facebook"
                 >
@@ -285,7 +296,7 @@ function PosterResult({ navigate, jobId }) {
                 <button
                   className="btn btn-ghost"
                   style={{ flex: 1, padding: "8px 4px" }}
-                  onClick={() => setShareModal("instagram")}
+                  onClick={() => openShare("instagram")}
                   disabled={!job.signed_url}
                   title="Quick share to Instagram"
                 >

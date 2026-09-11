@@ -33,14 +33,13 @@ from esports_poster_ai.api.schemas import (
 from esports_poster_ai.orgs.store import OrgStore
 from esports_poster_ai.billing import quality_multiplier
 from esports_poster_ai.platforms import branding_for, economics_for, features_for
-from esports_poster_ai.clients.gemini_client import GeminiError
 from esports_poster_ai.config import get_settings
 from esports_poster_ai.domain.inputs import PosterInput
 from esports_poster_ai.domain.job import Job
 from esports_poster_ai.jobs import enqueue_poster_job
 from esports_poster_ai.jobs.store import JobStore
 from esports_poster_ai.quotas import apply_quota_headers, check_quota_or_raise
-from esports_poster_ai.stages.caption_generator import generate_caption_for_job
+from esports_poster_ai.stages.caption_generator import CaptionError, generate_caption_for_job
 from esports_poster_ai.storage import get_storage
 from esports_poster_ai.storage.base import Storage
 
@@ -384,16 +383,20 @@ def generate_caption(
     """
     Get or generate a social caption for this completed poster.
 
-    First call generates via Gemini and caches on the job document; subsequent
-    calls return the cached caption unless ``regenerate=true``. Returns 503
-    when GEMINI_API_KEY isn't configured so the frontend can hide the feature.
+    Generated on demand, never as part of poster generation: most posters are
+    never shared, so captioning every one spent a model call per poster for a
+    feature few users opened.
+
+    First call generates and caches on the job document; subsequent calls return
+    the cached caption unless ``regenerate=true``. Returns 503 when no API key
+    is configured so the frontend can hide the feature.
     """
     if not features_for(auth.platform_id).caption:
         raise HTTPException(status_code=403, detail="Captions are not enabled on this plan.")
-    if not get_settings().gemini_api_key:
+    if not get_settings().openai_api_key:
         raise HTTPException(
             status_code=503,
-            detail="GEMINI_API_KEY is not set; caption generation is disabled.",
+            detail="OPENAI_API_KEY is not set; caption generation is disabled.",
         )
 
     job = store.get(job_id)
@@ -411,10 +414,10 @@ def generate_caption(
 
     try:
         caption = generate_caption_for_job(job)
-    except GeminiError as exc:
+    except CaptionError as exc:
         # 502 — upstream LLM problem. Frontend shows the error inline so the
         # user can retry without leaving the page.
-        raise HTTPException(status_code=502, detail=f"Gemini: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Caption: {exc}") from exc
 
     store.set_caption(job_id, caption)
     # Re-fetch so the response carries the persisted caption.

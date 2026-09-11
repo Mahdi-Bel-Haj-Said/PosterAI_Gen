@@ -352,6 +352,52 @@ class OpenAIClient:
         return poster_image
 
     # ---------------------------------------------------------------- structured output
+    def generate_text(
+        self,
+        prompt: str,
+        *,
+        temperature: float = 0.85,
+        max_output_tokens: int = 300,
+        model: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> str:
+        """
+        Plain text in, plain text out. No image, no schema.
+
+        Captions used to go to Gemini, whose API refuses requests by caller
+        location — it returns FAILED_PRECONDITION "user location is not
+        supported" from hosts in unsupported countries, which is not something
+        a deployment can configure its way out of. Poster generation already
+        depends on OpenAI being reachable, so routing captions there too means
+        one less network dependency that can be unavailable on its own.
+        """
+        run_id = run_id or new_run_id()
+        model = model or self.settings.openai_caption_model
+
+        if not prompt or not prompt.strip():
+            raise ValueError("prompt is empty.")
+
+        @self._retry_policy()
+        def _do() -> str:
+            resp = self._client.responses.create(
+                model=model,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+                input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            )
+            return (getattr(resp, "output_text", None) or "").strip()
+
+        try:
+            text = _do()
+        except RETRYABLE_ERRORS as e:
+            logger.error("text_stage.failed", extra={"run_id": run_id, "error": str(e)})
+            raise
+
+        if not text:
+            raise RuntimeError("Model returned an empty response.")
+        logger.info("text_stage.done", extra={"run_id": run_id, "model": model, "chars": len(text)})
+        return text
+
     def generate_structured(
         self,
         *,

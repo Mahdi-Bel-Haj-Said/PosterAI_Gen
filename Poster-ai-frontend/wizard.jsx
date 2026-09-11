@@ -491,7 +491,11 @@ function buildTeamLogoLibrary(assets) {
 // is: prefer the explicit URL, fall back to the stored key.
 function assetPath(a) {
   if (!a) return null;
-  return a.url || a.storage_key || null;
+  // Storage key first. `url` is a presigned link that expires in an hour, so a
+  // job retried or refined later would resolve a dead asset — and when a host
+  // wraps this SPA its asset objects can carry BOTH keys, in which case
+  // preferring `url` sent a signed URL where the pipeline expected a key.
+  return a.storage_key || a.url || null;
 }
 
 // Same sponsor name (case-insensitive, extension stripped) = same sponsor, even
@@ -940,7 +944,11 @@ function AssetUpload({ assetType, orgId, asset, onChange, label = "Upload", smal
         style={{
           width: square ? 56 : "100%",
           height: h,
-          background: hasAsset ? "transparent" : "var(--bg-elev)",
+          // Longhand, not the `background` shorthand: the shorthand resets
+          // backgroundImage/Size/Position, so on a rerender it wiped the very
+          // thumbnail this button exists to show — and React warns about the
+          // mixed shorthand/longhand pair.
+          backgroundColor: hasAsset ? "transparent" : "var(--bg-elev)",
           backgroundImage: hasAsset ? `url(${asset.signed_url})` : "none",
           backgroundSize: "cover",
           backgroundPosition: "center",
