@@ -45,3 +45,19 @@ bank_export/
 # OS
 .DS_Store
 Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Binary media assets.
+#
+# Logos, player photos, game key art and vibe previews are third-party brand
+# material (Riot, team orgs, sponsors) and are heavy relative to their value in
+# source control. The service reads its real assets from Cloudflare R2, which is
+# the system of record; these local copies exist only for demos and fixtures.
+# Kept out of the public repo — see README for how to supply your own.
+# ---------------------------------------------------------------------------
+assets/
+Poster-ai-frontend/assets/
+backgrounds/*.jpg
+backgrounds/*.jpeg
+backgrounds/*.png
+backgrounds/*.webp
