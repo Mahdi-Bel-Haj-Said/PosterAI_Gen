@@ -5,7 +5,14 @@ BACKGROUND_ANALYSIS_BLOCK: instructs GPT-4o to analyze the background image
   (STEP 1) before writing the image-generation prompt.
 FACTUAL_TEXT_BLOCK: hard rule — render METADATA verbatim, invent nothing.
 OUTPUT_RULES_BLOCK: STEP 3 template + universal poster generation rules.
+
+`build_fact_hierarchy_block` is the one thing here that varies: the ranking rule
+is static, but the prize pool is promoted to headline fact when the brief has one.
 """
+
+from __future__ import annotations
+
+from typing import Any, Dict
 
 
 FACTUAL_TEXT_BLOCK = """
@@ -77,6 +84,95 @@ own treatment, and it never appears as a labelled row.
 Do NOT render the facts as a row of equal icon + label cells at one uniform size
 — that is the exact failure this rule exists to prevent.
 """.strip()
+
+
+# When a prize pool is present it is named as the headline fact outright, rather
+# than left to the model's ranking. The generic rule below already says a prize
+# pool "sells a poster", but in practice the model kept rendering it as one more
+# equal chip in a row of venue / format / team-count — so the money, the single
+# strongest reason to enter, read no louder than the bracket type.
+_PRIZE_POOL_HEADLINE = """
+HEADLINE FACT FOR THIS POSTER — DECIDED, NOT A SUGGESTION:
+This poster has a PRIZE POOL. It IS the headline fact. Render the prize-pool
+value as the largest and most prominent factual element on the poster — roughly
+half the hero title's cap height, in the accent color, with its own breathing
+room and clear separation from every other value.
+- It must be unmistakably larger and louder than the venue, the dates, the
+  format, the team count, the circuit, and the stream handle. A viewer skimming
+  the poster reads the hero title, then the prize pool, then everything else.
+- SPECIFICALLY: the prize-pool value is rendered LARGER than the date and LARGER
+  than the location. If the date and the venue are set at one size, the prize
+  pool is set visibly bigger than both — not equal to them, and never smaller.
+- It does NOT belong in a small caption strip along the bottom edge, and it is
+  not grouped with FORMAT, CIRCUIT, or TEAM COUNT. Those are minor facts; the
+  prize pool sits in the main composition with the prominent content.
+- It never sits as one equal chip in a row of identical labelled pills. If other
+  facts are presented as a row, the prize pool is lifted OUT of that row and
+  given its own weight and position.
+- Its caption (PRIZE POOL) stays small; the VALUE is what carries the size. The
+  amount itself is the element that must catch the eye — a large caption over a
+  small number is the wrong way round.
+""".strip()
+
+# The one poster type where something outranks the money: on a results poster the
+# score is the whole point, and the prize pool is history by then.
+_SCORE_HEADLINE_TYPES = {"game_results"}
+
+
+def headline_prize_pool(input_data: Dict[str, Any]) -> str:
+    """The prize-pool value when it should be this poster's headline fact, else ""."""
+    if not isinstance(input_data, dict):
+        return ""
+
+    meta = input_data.get("_meta")
+    poster_type = meta.get("poster_type") if isinstance(meta, dict) else None
+    if poster_type in _SCORE_HEADLINE_TYPES:
+        return ""
+
+    tournament = input_data.get("tournament")
+    prize = tournament.get("prize_pool") if isinstance(tournament, dict) else None
+    if isinstance(prize, (int, float)):
+        return str(prize)
+    if isinstance(prize, str) and prize.strip():
+        return prize.strip()
+    return ""
+
+
+def build_fact_hierarchy_block(input_data: Dict[str, Any]) -> str:
+    """Fact hierarchy, with the prize pool promoted to headline when present."""
+    if not headline_prize_pool(input_data):
+        return FACT_HIERARCHY_BLOCK
+    return FACT_HIERARCHY_BLOCK + "\n\n" + _PRIZE_POOL_HEADLINE
+
+
+def build_image_prize_pool_rule(input_data: Dict[str, Any]) -> str:
+    """
+    The prize-pool emphasis, restated for the prompt gpt-image-2 actually sees.
+
+    The FACT HIERARCHY block lives in GPT-4o's prompt, so whether the emphasis
+    survives depends on GPT-4o writing it into the prompt it produces — and in
+    practice it kept arriving as one more small labelled chip. This is the same
+    telephone-hop fix already used for the factual data and the style directives:
+    say it again, verbatim, on the prompt the image model receives.
+
+    Returns "" when no prize pool applies.
+    """
+    prize = headline_prize_pool(input_data)
+    if not prize:
+        return ""
+    return (
+        "=== SIZE OF THE PRIZE POOL — NON-NEGOTIABLE ===\n\n"
+        f'The prize pool is "{prize}". It is the most prominent factual element on\n'
+        "this poster — second in visual weight only to the hero title itself.\n"
+        "- Render it BIGGER than the date. Render it BIGGER than the location.\n"
+        "  Bigger than the format, the team count, and the circuit.\n"
+        "- Roughly half the hero title's cap height, in the accent color, with\n"
+        "  clear space around it.\n"
+        "- Do NOT place it in a small caption strip along the bottom edge, and do\n"
+        "  NOT set it as one equal chip in a row with FORMAT or TEAM COUNT.\n"
+        "- Its caption (PRIZE POOL) stays small — the AMOUNT is what must be seen\n"
+        "  first. A big label over a small number is wrong."
+    )
 
 
 BACKGROUND_ANALYSIS_BLOCK = """
@@ -203,6 +299,20 @@ HERO TITLE:
     pattern peeking from BEHIND them where they cross dark areas, chromatic
     aberration, and scene debris floating IN FRONT of some letters to break the
     text plane.
+  * LEGIBILITY FLOOR — applies to intense and explosive, and OVERRIDES the two
+    lines above wherever they conflict. These levels add drama to the title, not
+    damage:
+      - Every letter keeps its full shape. The core stroke of each glyph stays
+        unbroken, uncovered, and instantly readable — a viewer must be able to
+        read the title in one glance, at a distance, without effort.
+      - Debris and particles in front of the text may cross the OUTER EDGES of a
+        few letters only. They never sit across a letter's centre, never bridge
+        two letters into one shape, and never obscure a whole character.
+      - Effects concentrate around and behind the word, not evenly over it. Keep
+        the area immediately inside the letterforms clean enough that the shape
+        reads against whatever is behind it.
+      - If an effect would make any character ambiguous, drop that effect. A
+        clean explosive title beats a dramatic unreadable one every time.
   * A calmer level is NOT a weaker poster. At chill or balanced, a cleanly lit
     title with crisp edges is the CORRECT result — do not add effects back in
     because the title looks "too plain".
@@ -258,13 +368,32 @@ or the Style DNA in consistency mode). The visual style's directives OVERRIDE
 the defaults in this section:
 - Default, for energetic / dense styles (cyberpunk, fire & energy, cosmic,
   dark fantasy): extend particle effects, energy arcs, and smoke from the main
-  character or light source into empty corners and edges; apply low-opacity
-  texture overlays to flat zones; use depth layers with foreground atmospheric
-  elements. Avoid large dead, flat areas.
+  character or light source; apply low-opacity texture overlays to flat zones;
+  use depth layers with foreground atmospheric elements. Avoid a completely
+  empty, flat, uninteresting frame.
+- HOW FAR those effects spread is set by the EFFECT BUDGET in the VISUAL STYLE
+  block, not by this rule and not by the vibe. This line says what the effects
+  are made of; the budget says how much of the frame they may cover. Filling
+  every corner because the vibe is "dense" is the failure, not the goal — a
+  calm area is atmosphere, not a hole to plug.
 - For a minimal / restrained style: do the OPPOSITE — embrace generous
   negative space, keep the composition calm and uncluttered, use few elements
   and sparse, subtle effects. Clean, intentionally empty areas are correct —
   do not fill them.
+
+QUIET ZONES — applies at EVERY density and energy level, and OVERRIDES the
+"avoid large dead, flat areas" default wherever they conflict:
+- Density belongs to the SCENE, not to the text. Behind and immediately around
+  the hero title, the factual values, the logos, and the sponsor strip, the
+  background stays calm: no competing sparks, debris, hot highlights, or busy
+  pattern directly behind text.
+- A high-energy poster is a calm frame with ONE loud focal area, not a frame
+  that is loud everywhere. If everything glows, nothing reads as the focus.
+- Keep a clear contrast step between text and whatever sits behind it. Where the
+  scene is bright and busy, darken or soften that patch; where it is dark, let
+  the text carry the light.
+- Some quiet area is a feature, not a gap to fill. A poster that is uniformly
+  busy edge to edge is a FAILURE of this rule, however energetic the brief.
 
 TYPOGRAPHY SYSTEM — TWO TIERS of text, treated very differently:
 
@@ -293,6 +422,23 @@ legibility beats scene integration:
   facts clearly smaller, and its minor facts (typically circuit, format, team
   count, season, phase, stream handle) small and lightweight, placed where they
   do not compete with the hero title or logos.
+
+TIER 2A — THE HEADLINE VALUE (the one fact named as HEADLINE VALUE in METADATA,
+or chosen as the headline fact). It is factual text, so it stays crisp and exact
+— but it is NOT styled like the rest of Tier 2:
+- It gets DISPLAY treatment: big, heavy numerals, the accent color, its own
+  breathing room. Think of it as the second-loudest thing on the poster after the
+  hero title, not as the first row of a data table.
+- It does NOT share a component with the other facts. Where the date, location,
+  format and team count sit together — a stack of pills, a row of icon chips, a
+  footer strip, a bordered panel — the headline value is NOT one of those
+  members. It lives outside that group, in its own space.
+- If the other facts carry a small icon each, the headline value does not get a
+  matching icon at a matching size. Matching furniture is what makes it read as a
+  peer.
+- Size it against the facts around it: its digits are at least TWICE the cap
+  height of the date. If a viewer cannot tell at a glance which value the poster
+  is selling, this rule has failed.
 - Factual text uses the extracted palette / team accent colors — but never at
   the cost of contrast and readability.
 

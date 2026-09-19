@@ -14,7 +14,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from esports_poster_ai.prompt.blocks.assets import build_asset_block
 from esports_poster_ai.prompt.blocks.consistency import build_consistency_block
-from esports_poster_ai.prompt.blocks.design import build_design_block, resolve_color_mode
+from esports_poster_ai.prompt.blocks.design import (
+    build_design_block,
+    energy_effect_budget,
+    resolve_color_mode,
+)
 from esports_poster_ai.prompt.blocks.game_logo import build_game_logo_block
 from esports_poster_ai.prompt.blocks.game_rules import build_game_rules_block
 from esports_poster_ai.prompt.blocks.layout import (
@@ -26,7 +30,8 @@ from esports_poster_ai.prompt.blocks.sponsors import build_sponsor_block
 from esports_poster_ai.prompt.blocks.typography import build_typography_block
 from esports_poster_ai.prompt.blocks.static import (
     BACKGROUND_ANALYSIS_BLOCK,
-    FACT_HIERARCHY_BLOCK,
+    build_fact_hierarchy_block,
+    build_image_prize_pool_rule,
     FACTUAL_TEXT_BLOCK,
     OUTPUT_RULES_BLOCK,
 )
@@ -368,6 +373,27 @@ def _creative_copy_lines(tournament: Dict[str, Any]) -> List[str]:
     return lines
 
 
+# The prize pool is lifted OUT of the flat fact list and given its own section.
+#
+# Listing it as "- Prize Pool: X" among "- Location: Y" and "- Format: Z" shows
+# the model five identically-shaped rows, and it renders five identically-sized
+# chips — which is exactly what kept happening. Three rounds of prose telling it
+# to make one row bigger lost to that structure every time. Presenting the value
+# as a different KIND of thing is what changes the output.
+def _headline_value_lines(label: str, value: Any) -> List[str]:
+    """Emit one fact as the poster's headline value, outside the peer list."""
+    rendered = _kv_lines([(label, value)])
+    if not rendered:
+        return []
+    return [
+        "",
+        "HEADLINE VALUE — NOT a peer of the facts above. This is the single value "
+        "the poster is selling; render it larger than every other factual value "
+        "(see FACT HIERARCHY):",
+        *rendered,
+    ]
+
+
 def _tournament_announcement_meta(input_data: Dict[str, Any]) -> List[str]:
     t = _dict(input_data, "tournament")
     lines = _kv_lines(
@@ -375,13 +401,13 @@ def _tournament_announcement_meta(input_data: Dict[str, Any]) -> List[str]:
             ("Tournament", t.get("name")),
             ("Start Date", t.get("start_date")),
             ("Location", t.get("location")),
-            ("Prize Pool", t.get("prize_pool")),
             ("Teams Competing", t.get("teams_count")),
             ("Format", t.get("format")),
             ("Circuit", t.get("circuit")),
         ]
     )
     lines.extend(_creative_copy_lines(t))
+    lines.extend(_headline_value_lines("Prize Pool", t.get("prize_pool")))
     return lines
 
 
@@ -392,11 +418,11 @@ def _tournament_banner_meta(input_data: Dict[str, Any]) -> List[str]:
             ("Tournament", t.get("name")),
             ("Date Range", t.get("date_range")),
             ("Location", t.get("location")),
-            ("Prize Pool", t.get("prize_pool")),
             ("Circuit", t.get("circuit")),
         ]
     )
     lines.extend(_creative_copy_lines(t))
+    lines.extend(_headline_value_lines("Prize Pool", t.get("prize_pool")))
     return lines
 
 
@@ -454,11 +480,19 @@ def build_image_factual_footer(input_data: Dict[str, Any]) -> str:
     """
     metadata = _build_metadata_block(input_data)
     factual = metadata.replace("METADATA:", "FACTUAL DATA (verbatim):", 1)
-    return (
+    footer = (
         "=== FACTUAL CONTENT — RENDER EXACTLY, INVENT NOTHING ===\n\n"
         f"{factual}\n\n"
         f"{_IMAGE_FACTUAL_RULES}"
     )
+    # The fact ranking lives in GPT-4o's prompt, so the prize pool's size only
+    # reaches the image model if GPT-4o chose to carry it — and it kept arriving
+    # as one more small labelled chip. Restate it here, same telephone-hop fix
+    # already used for the factual data and the style directives.
+    prize_rule = build_image_prize_pool_rule(input_data)
+    if prize_rule:
+        footer = f"{footer}\n\n{prize_rule}"
+    return footer
 
 
 _IMAGE_STYLE_RULES = """\
@@ -508,6 +542,9 @@ def _style_directive_lines(
         for label, key in (("Lighting", "lighting"), ("Atmosphere", "atmosphere"), ("Energy", "energy")):
             if _is_non_empty_str(style_dna.get(key)):
                 lines.append(f"- {label}: {style_dna.get(key)}")
+        budget = energy_effect_budget(style_dna.get("energy"))
+        if budget:
+            lines.append(f"- Effect budget: {budget}")
         return lines
 
     design = input_data.get("design") if isinstance(input_data, dict) else None
@@ -528,6 +565,9 @@ def _style_directive_lines(
         )
     if _is_non_empty_str(design.get("energy")):
         lines.append(f"- Energy: {design.get('energy')}")
+        budget = energy_effect_budget(design.get("energy"))
+        if budget:
+            lines.append(f"- Effect budget: {budget}")
     return lines
 
 
@@ -576,7 +616,8 @@ def build_prompt(input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]]
     7. visual-style block                  — consistency DNA, else design block
     8. sponsor-bar reservation              — only when sponsors.enabled
     9. layout-pattern block                — always (pick ONE pattern)
-   10. FACT_HIERARCHY_BLOCK                — always (rank the facts)
+   10. fact-hierarchy block                — always (rank the facts; prize pool
+                                             is named headline when present)
    11. OUTPUT_RULES_BLOCK                  — always
     """
     decisions = route(input_data, style_dna=style_dna)
@@ -644,7 +685,7 @@ def build_prompt(input_data: Dict[str, Any], style_dna: Optional[Dict[str, Any]]
     # Weight: the layout block says WHERE each fact goes, this one says how
     # BIG. Without it every factual value renders at one shared size and a
     # prize pool reads no louder than a team count.
-    parts.append(FACT_HIERARCHY_BLOCK)
+    parts.append(build_fact_hierarchy_block(input_data))
 
     parts.append(OUTPUT_RULES_BLOCK)
     return "\n\n".join([p.strip() for p in parts if p and p.strip()])

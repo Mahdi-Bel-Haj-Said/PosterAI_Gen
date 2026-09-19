@@ -45,16 +45,22 @@ IF ROSTER_REVEAL:
 IF TOURNAMENT_ANNOUNCEMENT:
   - Hero title: tournament name or tagline — largest text element
   - Tournament logo if available, else bold stylized text treatment
-  - Show start date + location (if provided)
-  - Show prize pool (if provided)
-  - Show "X TEAMS COMPETING" if teams_count provided
+  - PRIZE POOL (if provided): the HEADLINE FACT. Render the amount larger and
+    louder than every other value here. It is the single strongest reason a team
+    enters, and it must be the first thing read after the hero title
+  - Start date + location (if provided): clearly SMALLER than the prize pool
+  - "X TEAMS COMPETING" if teams_count provided: smaller still
+  - Format / circuit if provided: minor, quiet reference detail
   - Tagline and sub-tagline if provided
     """.strip(),
     "tournament_banner": """
 IF TOURNAMENT_BANNER (landscape format):
   - Wide cinematic composition — content spread horizontally
   - Tournament name or logo as the dominant element
-  - Date range on one side, location + prize pool on the other
+  - PRIZE POOL (if provided): the HEADLINE FACT. Give it its own position and
+    visibly more weight than every other value — never pair it with the location
+    as an equal, and never let the date outsize it
+  - Date range and location: placed separately, clearly smaller than the prize pool
   - Tagline centered or integrated into the composition
     """.strip(),
 }

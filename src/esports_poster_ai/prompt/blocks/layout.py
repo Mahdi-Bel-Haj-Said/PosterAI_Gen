@@ -1,12 +1,15 @@
 """
 Layout blocks — how the poster's elements are arranged.
 
-`build_layout_block` hands the vision model a menu of ten named composition
-patterns and makes it commit to exactly ONE, chosen from the poster format, how
-much content the brief carries, and where the background is busy or empty.
-Without it the model composes ad hoc, and because the output template maps
-content into TOP / MIDDLE / BOTTOM bands, nearly every poster came back as the
-same stacked-band arrangement.
+`build_layout_block` SAMPLES one of ten named composition patterns and hands it
+to the vision model as a decision already made, picking the pool from the poster
+format and how much content the brief carries.
+
+It used to present all ten as a menu and let the model choose. That produced the
+same failure the roster arrangements had: given a free choice the model converges
+on one safe answer, so posters kept coming back in the same stacked-band
+arrangement despite ten patterns being on offer. Choosing here spends the model's
+judgement on executing the pattern against the background instead of picking it.
 
 `build_roster_arrangement_block` does the same job one level down, for the five
 player photos on a roster reveal. The poster-type block used to say "player
@@ -30,43 +33,147 @@ _ORIENTATION_LABEL = {
     "landscape": "landscape (wide)",
 }
 
-_PATTERNS = """\
-1. Hero + Supporting — one dominant element; everything else clearly smaller and secondary around it.
-2. Diagonal Action — content flows along a strong diagonal axis, corner toward corner; speed and motion.
-3. Center-Focal — one commanding element dead centre, the rest arranged symmetrically around it.
-4. Modular (Bento) Grid — content divided into clean rectangular cells of varying size.
-5. Radial (Circular) — elements arranged in a ring, or radiating outward from a central point.
-6. Progressive (Timeline / List) — elements sequenced along one axis in a deliberate reading order.
-7. Collision (Overlapping) — layers deliberately overlap and interlock; depth built by occlusion.
-8. Negative-Space Hero — a single element held in a large, intentionally empty field.
-9. Broken Grid (Asymmetrical) — an underlying grid deliberately broken; offset, off-balance tension.
-10. Repetition (Patterned) — one motif repeated at rhythm across the frame, varying scale or opacity."""
+# The ten patterns, each paired with the brief size it actually serves.
+#
+# These used to be presented as a menu for the vision model to choose from, and
+# the result was the same failure the roster arrangements had: offered a free
+# choice, the model converges on one safe answer, so nearly every poster came
+# back as the same stacked-band composition. The pattern is now SAMPLED HERE and
+# handed over as a decision already made — the model's judgement is spent on
+# executing it against the background, not on picking it.
+_HERO_SUPPORTING = (
+    "HERO + SUPPORTING — one dominant element; everything else clearly smaller "
+    "and secondary, arranged around it."
+)
+_DIAGONAL = (
+    "DIAGONAL ACTION — content flows along a strong diagonal axis, corner toward "
+    "corner; speed and motion."
+)
+_CENTER_FOCAL = (
+    "CENTER-FOCAL — one commanding element dead centre, the rest arranged "
+    "symmetrically around it."
+)
+_BENTO = (
+    "MODULAR (BENTO) GRID — content divided into clean rectangular cells of "
+    "varying size."
+)
+_RADIAL = (
+    "RADIAL (CIRCULAR) — elements arranged in a ring, or radiating outward from "
+    "a central point."
+)
+_PROGRESSIVE = (
+    "PROGRESSIVE (TIMELINE / LIST) — elements sequenced along one axis in a "
+    "deliberate reading order."
+)
+_COLLISION = (
+    "COLLISION (OVERLAPPING) — layers deliberately overlap and interlock; depth "
+    "built by occlusion."
+)
+_NEGATIVE_SPACE = (
+    "NEGATIVE-SPACE HERO — a single element held in a large, intentionally empty "
+    "field."
+)
+_BROKEN_GRID = (
+    "BROKEN GRID (ASYMMETRICAL) — an underlying grid deliberately broken; offset, "
+    "off-balance tension."
+)
+_REPETITION = (
+    "REPETITION (PATTERNED) — one motif repeated at rhythm across the frame, "
+    "varying scale or opacity."
+)
+
+# Patterns that can carry a lot of separate values without turning into soup.
+_HEAVY_PATTERNS = [_BENTO, _PROGRESSIVE, _BROKEN_GRID, _COLLISION, _HERO_SUPPORTING]
+# Patterns that need room to breathe — wrong for a brief with ten facts in it.
+_SPARSE_PATTERNS = [_NEGATIVE_SPACE, _CENTER_FOCAL, _HERO_SUPPORTING, _RADIAL, _DIAGONAL]
+# Everything, for briefs in the middle.
+_ALL_PATTERNS = [
+    _HERO_SUPPORTING, _DIAGONAL, _CENTER_FOCAL, _BENTO, _RADIAL,
+    _PROGRESSIVE, _COLLISION, _NEGATIVE_SPACE, _BROKEN_GRID, _REPETITION,
+]
 
 
-def build_layout_block(input_data: Dict[str, Any]) -> str:
-    """Return the layout-pattern selection block for this poster."""
+def _content_weight(input_data: Dict[str, Any]) -> int:
+    """
+    Roughly how many separate things this poster has to place.
+
+    Used only to pick a sensible pattern pool: a five-player roster with
+    sponsors must not be handed Negative-Space Hero, and a bare two-team
+    gameday must not be handed a Bento Grid with nothing to put in the cells.
+    """
+    if not isinstance(input_data, dict):
+        return 0
+
+    weight = 0
+    match = input_data.get("match")
+    if isinstance(match, dict):
+        weight += sum(1 for k in ("team1", "team2") if isinstance(match.get(k), dict))
+        weight += sum(
+            1 for k in ("date", "time", "format", "timezone") if match.get(k)
+        )
+    roster = input_data.get("roster")
+    if isinstance(roster, dict) and isinstance(roster.get("players"), list):
+        # Each player is two things to place: a portrait and an IGN attached to it.
+        weight += 2 * len(roster["players"])
+    event = input_data.get("event")
+    if isinstance(event, dict):
+        weight += sum(1 for v in event.values() if v)
+    sponsors = input_data.get("sponsors")
+    if isinstance(sponsors, dict) and sponsors.get("enabled"):
+        weight += len(sponsors.get("logos") or [])
+    for key in ("tournament", "stream"):
+        block = input_data.get(key)
+        if isinstance(block, dict):
+            weight += sum(1 for v in block.values() if v)
+    return weight
+
+
+def build_layout_block(
+    input_data: Dict[str, Any], *, rng: Optional[random.Random] = None
+) -> str:
+    """Pick the composition pattern for this poster and hand it over as decided."""
     meta = input_data.get("_meta") if isinstance(input_data, dict) else None
     fmt = meta.get("output_format") if isinstance(meta, dict) else None
     orientation = orientation_from_output_format(fmt)
     label = _ORIENTATION_LABEL.get(orientation, orientation)
 
+    poster_type = meta.get("poster_type") if isinstance(meta, dict) else None
+    weight = _content_weight(input_data)
+
+    if poster_type == "roster_reveal":
+        # Five portraits and five IGNs, however bare the rest of the brief is.
+        # Negative-Space Hero cannot hold that, whatever the weight says.
+        pool = _HEAVY_PATTERNS
+    elif weight >= 9:
+        pool = _HEAVY_PATTERNS
+    elif weight <= 4:
+        pool = _SPARSE_PATTERNS
+    else:
+        pool = _ALL_PATTERNS
+
+    r = rng or random
+    pattern = r.choice(pool)
+
     return f"""
-STEP 2.5 — CHOOSE THE LAYOUT PATTERN (pick exactly ONE):
-This poster is {label}. Choose the single pattern below that best fits (a) that
-format, (b) how much content the METADATA and ASSETS above actually require, and
-(c) the subject position and empty zones you found in the background.
+STEP 2.5 — THE LAYOUT PATTERN FOR THIS POSTER (already chosen — use it):
+This poster is {label}. Its composition pattern is:
 
-{_PATTERNS}
+CHOSEN PATTERN: {pattern}
 
-- Content-heavy briefs (full rosters, map lists, many logos) suit Bento Grid,
-  Progressive, or Broken Grid; sparse briefs suit Negative-Space Hero,
-  Center-Focal, or Hero + Supporting; a background with one strong off-centre
-  subject suits Hero + Supporting, Diagonal Action, or Collision.
-- Commit to it: every element you place must follow the chosen pattern, and you
-  must name that pattern in the LAYOUT section of your output prompt. Never blend
-  two patterns.
+- Use THIS pattern. It has been selected for this poster's format and for how
+  much content the METADATA and ASSETS actually carry. Do not substitute a
+  different one because another feels safer, and never blend two patterns.
+- Adapt it to the background you can see: work with the subject's position and
+  the empty zones you found, scaling and shifting elements so the pattern fits
+  the real image. Adapting it is expected; abandoning it is not.
+- Name this pattern in the LAYOUT section of your output prompt, so it carries
+  through to the image model.
 - The pattern governs PLACEMENT only. It never overrides the verbatim-text rules,
-  the sponsor-strip reservation, or the visual-style directives.
+  the sponsor-strip reservation, the fact hierarchy, or the visual-style
+  directives.
+- ONE exception: if this pattern genuinely cannot hold the required content
+  without hiding or shrinking a factual value below legibility, fall back to
+  HERO + SUPPORTING and say in the LAYOUT section that you did, and why.
 """.strip()
 
 

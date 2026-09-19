@@ -66,6 +66,23 @@ _CALM_ENERGIES = {"chill", "balanced"}
 
 # Creative copy (tagline / hype phrase) STYLES — must differ from the hero title.
 # Dropped marker-scrawl and graffiti-tag (come out messy).
+# FACTUAL text faces (dates, venue, prize pool, team names, scores). Named
+# families rather than descriptions, because the image model renders a named
+# mainstream face more consistently than "a clean sans".
+#
+# All four are high-legibility screen faces with a real bold weight — the
+# constraint here is readability at small sizes over a busy background, so this
+# bank is deliberately narrower in character than the hero-title banks. Rajdhani
+# is the one with obvious esports/techno flavour; the other three are neutral
+# workhorses that differ mainly in letter width and warmth.
+_FACTUAL_TYPEFACES = [
+    "Montserrat (geometric, wide, even-width caps)",
+    "Poppins (geometric, circular bowls, friendly and open)",
+    "Inter (neutral UI grotesque, tight apertures, very high legibility)",
+    "Rajdhani (squarish techno face with flat sides — esports scoreboard feel)",
+]
+
+
 _TAGLINE_STYLES = [
     "a handwritten brush script",
     "a clean condensed italic sans",
@@ -94,6 +111,7 @@ def build_typography_block(
     typeface = r.choice(_TITLE_TYPEFACES)
     finish = r.choice(finishes)
     tagline = r.choice(_TAGLINE_STYLES)
+    factual = r.choice(_FACTUAL_TYPEFACES)
     return f"""
 TYPOGRAPHY DIRECTION — vary the type so posters don't all look the same. This
 OVERRIDES the default "ultra-bold wide all-caps + metallic" title and the default
@@ -108,8 +126,11 @@ brush-script tagline:
 - Choose type that still suits the scene's mood; if a named style would clash
   badly with the vibe, adapt its execution but keep it clearly different from the
   usual look.
-- FACTUAL TEXT (names, dates, scores, tournament, format) stays clean and legible
-  regardless — this direction changes only the stylized title + creative copy.
+- FACTUAL TEXT (names, dates, scores, venue, prize pool, tournament, format):
+  set it in {factual}. Use this ONE family for every factual value on the poster —
+  vary only weight and size within it, never mix a second factual face.
+  It stays clean and legible regardless: no particles, debris, or chromatic
+  aberration on these glyphs, whatever the energy level.
 """.strip()
 
 
